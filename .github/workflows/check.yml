@@ -1,0 +1,90 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Unit and concurrency checks
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+      - name: ARM64 release build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+          GOARM64: v8.0
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags='-s -w' -o dist/mwan3-autobalancer-linux-arm64 ./cmd/mwan3-autobalancer
+          file dist/mwan3-autobalancer-linux-arm64
+          readelf -h dist/mwan3-autobalancer-linux-arm64 | grep 'AArch64'
+          if readelf -l dist/mwan3-autobalancer-linux-arm64 | grep -q INTERP; then
+            echo 'Unexpected dynamic loader'
+            exit 1
+          fi
+          sha256sum dist/mwan3-autobalancer-linux-arm64 > dist/SHA256SUMS
+
+  openwrt-files:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check UI, RPC declarations and shell syntax
+        run: |
+          test -d openwrt
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          root=pathlib.Path('openwrt')
+          for path in root.rglob('*.json'):
+              json.loads(path.read_text())
+          for path in root.rglob('*.js'):
+              subprocess.run(['node','--check',str(path)],check=True)
+          for path in root.rglob('*'):
+              if path.is_file() and path.read_bytes().startswith(b'#!/bin/sh'):
+                  subprocess.run(['sh','-n',str(path)],check=True)
+          PY
+      - name: Recovery and UI regression fixtures
+        run: |
+          python3 tests/test_openwrt.py
+          python3 tests/test_packages.py
+          node tests/test_ui.js
+
+  sdk-packages:
+    runs-on: ubuntu-24.04
+    needs: [go, openwrt-files]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build actual OpenWrt packages
+        uses: openwrt/gh-action-sdk@b8cc97d1072dedff455e2945a73fc43f5c7e1749 # v9
+        env:
+          ARCH: mediatek-filogic-24.10.8
+          CONTAINER: ghcr.io/openwrt/sdk
+          FEEDNAME: autobalancer
+          FEED_DIR: ${{ github.workspace }}
+          ARTIFACTS_DIR: ${{ github.workspace }}/sdk-artifacts
+          PACKAGES: mwan3-autobalancer luci-app-mwan3-autobalancer
+          NO_SHFMT_CHECK: '1'
+          V: s
+      - name: Inspect installed file manifests and static ARM64 binary
+        run: python3 scripts/verify_ipks.py sdk-artifacts
+      - name: Save installable packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openwrt-24.10.8-arm64-packages
+          path: sdk-artifacts/**/*.ipk
+          if-no-files-found: error
+          compression-level: 0
