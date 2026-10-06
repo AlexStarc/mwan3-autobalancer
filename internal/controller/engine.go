@@ -199,7 +199,7 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 			if valid(sample, now, s.Config.MaxAge) {
 				speed := sample.Speed
 				c.SpeedMbps = &speed
-			} else if sample.Count >= 2 {
+			} else if sample.Count >= 2 && c.ProbeState != "measuring" {
 				c.ProbeState = "historical"
 			}
 		}
@@ -224,7 +224,8 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 		} else if s.Config.ScheduleMode == "hybrid" {
 			c.Phase = "maintenance"
 		}
-		if s.Config.Enabled && s.Config.URL != "" && c.Online && s.Config.ScheduleMode == "hybrid" {
+		pendingCalibration := !schedule.Complete && schedule.Attempts < 5 && !now.After(schedule.CalibrationUntil)
+		if s.Config.Enabled && s.Config.URL != "" && c.Online && (s.Config.ScheduleMode == "hybrid" || pendingCalibration) {
 			next := schedule.Next
 			if !schedule.Complete && (schedule.Attempts >= 5 || now.After(schedule.CalibrationUntil)) {
 				next = now.Add(s.Config.For(c.Interface).Interval)
@@ -320,7 +321,14 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		}
 		if due {
 			e.state.ProbeStates[c.Interface] = "measuring"
+			if sc.Complete {
+				sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
+			} else {
+				sc.Next = e.Now().Add(s.Config.CalibrationInterval)
+			}
+			e.state.Schedule[c.Interface] = sc
 		}
+		e.makeReport(s, e.Now())
 		e.mu.Unlock()
 		if !due {
 			continue
@@ -349,6 +357,7 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 			sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
 		}
 		e.state.Schedule[c.Interface] = sc
+		e.makeReport(s, e.Now())
 		e.mu.Unlock()
 		if err = e.save(); err != nil {
 			return err

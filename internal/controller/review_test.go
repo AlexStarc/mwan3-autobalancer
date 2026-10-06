@@ -230,8 +230,35 @@ func TestEpochOverrideIsolationAndScheduleStatus(t *testing.T) {
 	}
 	x.cfg.Values["main"]["schedule_mode"] = "on-change"
 	r, err = e.Status(ctx)
-	if err != nil || r.NextProbeAt != nil || r.Channels[1].NextProbeAt != nil || r.Channels[1].Phase != "holding" {
+	if err != nil || r.NextProbeAt == nil || r.Channels[0].NextProbeAt == nil || !r.Channels[0].NextProbeAt.After(x.now) || r.Channels[1].NextProbeAt != nil || r.Channels[1].Phase != "holding" {
 		t.Fatal(r, err)
+	}
+	if err = e.Cycle(ctx, true, false); err != nil {
+		t.Fatal(err)
+	}
+	x.now = x.now.Add(time.Minute)
+	if err = e.Cycle(ctx, true, false); err != nil {
+		t.Fatal(err)
+	}
+	r, err = e.Status(ctx)
+	if err != nil || r.NextProbeAt != nil || r.Channels[0].NextProbeAt != nil || r.Channels[1].NextProbeAt != nil {
+		t.Fatal("finished on-change calibration still schedules probes", r, err)
+	}
+	read := x.adapter.ReadFile
+	x.adapter.ReadFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "iface_state/a") {
+			return []byte("offline"), nil
+		}
+		return read(path)
+	}
+	r, err = e.Status(ctx)
+	if err != nil || r.NextProbeAt != nil {
+		t.Fatal("offline on-change channel schedules a probe", r, err)
+	}
+	x.adapter.ReadFile = read
+	r, err = e.Status(ctx)
+	if err != nil || r.NextProbeAt == nil || r.Channels[0].NextProbeAt == nil || !r.NextProbeAt.After(x.now) || r.Channels[1].NextProbeAt != nil {
+		t.Fatal("reconnect calibration has no next probe", r, err)
 	}
 }
 func TestScheduleKnobsAndLockedModePause(t *testing.T) {
