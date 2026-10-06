@@ -52,7 +52,12 @@ function rule(n,    i,m,p,c,j,o,part,k,a,t) {
 	return o "|" m "|" p "|" c "|" j
 }
 {
-	if(updates && ($0=="*mangle" || $0=="COMMIT" || $0=="")) next
+	if(updates) {
+		if($0=="") next
+		if($0=="*mangle") { if(transaction) fail(); transaction=1; next }
+		if($0=="COMMIT") { if(!transaction) fail(); transaction=0; commits++; next }
+		if(!transaction) fail()
+	}
 	n=tokens($0); if(tok[2]!=chain) fail()
 	if(tok[1]=="-N" && n==2) { exists=1;next }
 	if(tok[1]=="-F" && n==2 && updates) { delete rules;count=0;exists=1;next }
@@ -61,4 +66,9 @@ function rule(n,    i,m,p,c,j,o,part,k,a,t) {
 	if(tok[1]=="-I") {for(i=count;i>0;i--)rules[i+1]=rules[i];rules[1]=r;count++}
 	else rules[++count]=r
 }
-END { if(bad || !exists) exit 1; for(i=1;i<=count;i++) print rules[i] }
+END {
+	# Disabled/device-empty stock members emit complete no-op transactions.
+	# Accept them only as updates; readback still requires the selected chain.
+	if(bad || (updates ? (transaction || !commits) : !exists)) exit 1
+	for(i=1;i<=count;i++) print rules[i]
+}

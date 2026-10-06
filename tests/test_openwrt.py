@@ -155,7 +155,10 @@ mwan3_init() { MMX_MASK=0x3f00; }
 mwan3_create_policies_iptables() {
  $IPT4 -S >/dev/null
  # Deliberately swallow errors, like the installed stock helper.
- printf '*mangle\\n-N mwan3_policy_%s\\n-F mwan3_policy_%s\\n-A mwan3_policy_%s -m mark --mark 0x0/0x3f00 -m comment --comment "wan 3 3" -j MARK --set-xmark 0x100/0x3f00\\nCOMMIT\\n' "$1" "$1" "$1" | $IPT4R || :
+ printf '*mangle\\n-N mwan3_policy_%s\\n-F mwan3_policy_%s\\n-A mwan3_policy_%s -m mark --mark 0x0/0x3f00 -m comment --comment "unreachable" -j MARK --set-xmark 0x3e00/0x3f00\\nCOMMIT\\n' "$1" "$1" "$1" | $IPT4R || :
+ # An offline/device-empty member produces the actual native no-op dump.
+ printf '*mangle\\nCOMMIT\\n\\n' | $IPT4R || :
+ printf '*mangle\\n-F mwan3_policy_%s\\n-A mwan3_policy_%s -m mark --mark 0x0/0x3f00 -m comment --comment "wan 3 3" -j MARK --set-xmark 0x100/0x3f00\\nCOMMIT\\n' "$1" "$1" | $IPT4R || :
 }
 ''')
 
@@ -430,6 +433,37 @@ class GrammarTests(unittest.TestCase):
         expected = self.canonical('*mangle\n-N mwan3_policy_balanced\n-F mwan3_policy_balanced\n-A mwan3_policy_balanced ' + first + '\n-I mwan3_policy_balanced ' + second + '\nCOMMIT\n', True)
         actual = self.canonical('-N mwan3_policy_balanced\n-A mwan3_policy_balanced ' + second.replace('0.500', '0.50000000023') + '\n-A mwan3_policy_balanced ' + first + '\n')
         self.assertEqual(expected.returncode, 0, expected.stderr); self.assertEqual(expected.stdout, actual.stdout)
+
+    def test_stock_disabled_member_noop_and_later_active_update(self):
+        # Captured native disabled/device-empty member output: this complete
+        # mangle transaction is a legal no-op, not a missing selected chain.
+        noop = '*mangle\nCOMMIT\n\n'
+        self.assertEqual(self.canonical(noop, True).returncode, 0)
+        self.assertEqual(self.canonical(noop, True).stdout, '')
+        self.assertNotEqual(self.canonical(noop).returncode, 0)
+        fallback = '-m mark --mark 0x0/0x3f00 -m comment --comment "unreachable" -j MARK --set-xmark 0x3e00/0x3f00'
+        active = '-m mark --mark 0x0/0x3f00 -m comment --comment "wan 3 3" -j MARK --set-xmark 0x100/0x3f00'
+        initial = '*mangle\n-N mwan3_policy_balanced\n-F mwan3_policy_balanced\n-A mwan3_policy_balanced ' + fallback + '\nCOMMIT\n'
+        update = '*mangle\n-F mwan3_policy_balanced\n-A mwan3_policy_balanced ' + active + '\nCOMMIT\n'
+        result = self.canonical(initial + noop + update + noop + noop, True)
+        readback = self.canonical('-N mwan3_policy_balanced\n-A mwan3_policy_balanced ' + active + '\n')
+        self.assertEqual(result.returncode, 0); self.assertEqual(result.stdout, readback.stdout)
+        # A no-op preserves every offline exception and stock fallback as-is.
+        offline = '*mangle\n-I mwan3_policy_balanced -o eth0 -m mark --mark 0x0/0x3f00 -m comment --comment "out wan eth0" -j MARK --set-xmark 0x3f00/0x3f00\nCOMMIT\n'
+        for name, mark in [('default', '0x3f00'), ('blackhole', '0x3d00'), ('unreachable', '0x3e00')]:
+            offline_initial = initial.replace('"unreachable"', '"' + name + '"').replace('0x3e00/', mark + '/')
+            before = self.canonical(offline_initial + offline, True)
+            after = self.canonical(offline_initial + offline + noop, True)
+            self.assertEqual(before.returncode, 0); self.assertEqual(after.returncode, 0); self.assertEqual(before.stdout, after.stdout)
+
+    def test_updates_require_complete_mangle_transactions(self):
+        for text in ['', '\n', 'COMMIT\n', '*mangle\n', '*mangle\n\n', '*filter\nCOMMIT\n',
+                     '*mangle\nCOMMIT\nCOMMIT\n', '*mangle\n*mangle\nCOMMIT\n',
+                     '*mangle\nCOMMIT\n*mangle\n', '-N mwan3_policy_balanced\n*mangle\nCOMMIT\n',
+                     '*mangle\nCOMMIT\n-N mwan3_policy_balanced\n', '*mangle\n-N foreign\nCOMMIT\n']:
+            self.assertNotEqual(self.canonical(text, True).returncode, 0, repr(text))
+        # Readback mode still demands an actual selected-chain declaration/rule.
+        self.assertNotEqual(self.canonical('').returncode, 0)
 
     def test_all_offline_fallbacks_and_foreign_rules(self):
         for fallback, mark in [('default','0x3f00'), ('blackhole','0x3d00'), ('unreachable','0x3e00')]:
