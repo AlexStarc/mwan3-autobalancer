@@ -1,0 +1,5 @@
+.DS_Store
+/dist/
+/work/
+/.venv/
+/node_modules/
