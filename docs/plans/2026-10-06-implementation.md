@@ -22,7 +22,11 @@ CLI: `status` prints one JSON object; `probe` queues one asynchronous dry-run pr
 
 UCI package `mwan3_autobalancer`, section `main`: `enabled=1`, `mode=observe`, `policy=balanced`, empty `probe_url`, `interval_seconds=3600`, `probe_bytes=33554432`, `daily_budget_bytes=268435456` per logical WAN, `timeout_seconds=15`, `minimum_seconds=2`, `minimum_bytes=262144`, `alpha=0.25`, `max_age_seconds=86400`, `hysteresis_percent=5`, `minimum_apply_seconds=60`. Empty URL disables automatic probes; installation does not turn on applying. Validate all fields in backend, regardless of UI validation.
 
+Optional UCI sections `wan` identify a logical `interface` and override `interval_seconds`, `probe_bytes` and `daily_budget_bytes`; unspecified fields inherit explicitly configured main settings. Validate duplicate/unknown interface overrides and numeric bounds. UI exposes these per-WAN overrides on the same page. Probe scheduling and persistent quota are keyed by logical interface, never the transient Linux device.
+
 Runtime directory `/var/run/mwan3-autobalancer`; persistent budgets `/etc/mwan3-autobalancer/budgets`. Lease and heartbeat are armed before any transaction. Policy names/identifiers are strict validated strings, never arbitrary shell input. Snapshot generation covers UCI digest, member/device/address/metric/online state and marks; a changed generation cancels the apply.
+
+Every applying entry point, including once --apply, fails closed unless an independent watchdog readiness record is fresh (15-second maximum age) and its recorded PID still belongs to the expected watchdog script. Watchdog writes its readiness every 5 seconds from Linux uptime. Controller heartbeat also uses uptime. A lease alone is insufficient. Readiness is rechecked under the shared lock immediately before arming/applying. Expose apply_ready and apply_unavailable_reason in status for the UI.
 
 ## Task 1: Go engine, platform adapter and tests
 
@@ -32,6 +36,7 @@ Runtime directory `/var/run/mwan3-autobalancer`; persistent budgets `/etc/mwan3-
 - [ ] Implement bounded command runner with child process-group termination/reaping and bounded stdout/stderr. Curl probes use mwan3 use plus explicit device/source validation; verify HTTP code, actual payload and transfer time; do not count redirects/error pages as speed.
 - [ ] Implement UCI/ubus discovery and strict 2.11.16/iptables-legacy compatibility gating. Unknown/unsupported states remain visible and never trigger apply.
 - [ ] Test and implement only-selected-chain transaction generation, stock lock `/var/lock/procd_mwan3.lock`, re-snapshot, iptables-restore --test/--noflush, readback and independent rollback. Never write measured weights to `/etc/config/mwan3`, restart mwan3, flush conntrack or touch LAN/firewall/Wi-Fi config.
+- [ ] Verify independent watchdog readiness in all applying paths; absent, stale, wrong-PID or failed watchdog must leave the chain unchanged. Test differing per-WAN intervals and budgets and duplicate override rejection.
 - [ ] Add daemon/CLI JSON status and Unix-socket controls. Serialize cycles and reject duplicate probe work; heartbeat must continue during bounded measurements; clean up child processes and socket on shutdown.
 - [ ] Run `go test ./...`, `go test -race ./...`, `go vet ./...`, Linux ARM64 cross-build and inspect ELF. Review against spec before code-quality review; address findings.
 
@@ -41,6 +46,7 @@ Runtime directory `/var/run/mwan3-autobalancer`; persistent budgets `/etc/mwan3-
 - [ ] Add shell restore script using installed mwan3 library under its shared lock, and watchdog that restores lease policy after missing heartbeat without using Go. Validate lease input. On stop/remove restore current stock policy, not an outdated backup.
 - [ ] Add rpcd object `mwan3.autobalancer`: status (read), probe and rollback (write), no caller-supplied command. CLI probes are asynchronous; UI repeats do not create concurrent jobs.
 - [ ] Add one LuCI page Network → Auto-balancer: responsive WAN table, actual/unknown/stale/progress/error/budget states, policy and probe settings, observation/automatic mode selector, buttons Probe and Restore. Existing login/ACL; no raw command fields.
+- [ ] On the same page, expose per-logical-WAN override sections for interval, probe payload and daily budget; show inherited settings when no override exists. Disable automatic mode when apply_ready is false and show the reason.
 - [ ] Add `mwan3-autobalancer` and `luci-app-mwan3-autobalancer` package definitions, supported dependencies and uninstall scripts matching recovery commands. Check JS syntax, JSON ACL/menu, shell syntax and package file manifest.
 - [ ] Add unit/integration fixtures for RPC validation, UI unknown values, duplicate jobs, failed startup, expired lease, unsafe policy names and bounded respawn behavior. Review spec first, then quality.
 
