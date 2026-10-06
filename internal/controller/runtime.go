@@ -66,13 +66,15 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 // the group before Wait reaps that leader; neither cleanup path can target a reused leader PID.
 // Commands and descendants inherit the group; deliberately detached groups are outside this ownership.
 const commandSupervisor = `set +m
+exec 6<&0
 leader=$$
 (
   IFS= read -r release <&4
-  kill -KILL -- "-$leader"
-) </dev/null >/dev/null 2>&1 3>&- &
+  kill -KILL "-$leader"
+) </dev/null >/dev/null 2>&1 3>&- 6<&- &
 monitor=$!
-"$@" <&0 3>&- 4>&- &
+"$@" <&6 3>&- 4>&- 6<&- &
+exec 6<&-
 child=$!
 wait "$child"
 result=$?
@@ -82,6 +84,12 @@ exit "$result"
 `
 
 func (ExecRunner) Run(ctx context.Context, args []string, input string) (string, error) {
+	return runCommand(ctx, "/bin/sh", args, input)
+}
+
+// Shell selection is internal so tests can exercise dash as well as the host's /bin/sh.
+// Production always uses /bin/sh; no configuration value selects or supplies shell text.
+func runCommand(ctx context.Context, shell string, args []string, input string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("empty command")
 	}
@@ -100,7 +108,7 @@ func (ExecRunner) Run(ctx context.Context, args []string, input string) (string,
 	defer holdR.Close()
 	defer holdW.Close()
 	launchArgs := append([]string{"-c", commandSupervisor, "mwan3-autobalancer-runner"}, args...)
-	cmd := exec.CommandContext(ctx, "/bin/sh", launchArgs...)
+	cmd := exec.CommandContext(ctx, shell, launchArgs...)
 	cmd.ExtraFiles = []*os.File{statusW, holdR}
 	if lock, _ := ctx.Value(commandLockKey{}).(*os.File); lock != nil {
 		// Inherit the same flock open-file-description, not an independently opened file.

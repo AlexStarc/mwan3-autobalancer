@@ -11,7 +11,8 @@ import (
 
 func TestDaemonSocketAndCleanup(t *testing.T) {
 	x := makeFixture(t)
-	short, err := os.MkdirTemp("/private/tmp", "ab-")
+	// Use a short Unix path: macOS's default temp path can exceed the socket limit.
+	short, err := os.MkdirTemp("/tmp", "ab-")
 	if err != nil {
 		t.Fatal(err)
 	}

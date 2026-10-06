@@ -11,7 +11,8 @@ import (
 
 func TestSocketStatusPublishesEachSerialProbeStartAndFinish(t *testing.T) {
 	x := makeFixture(t)
-	short, err := os.MkdirTemp("/private/tmp", "ab-progress-")
+	// Use a short Unix path: macOS's default temp path can exceed the socket limit.
+	short, err := os.MkdirTemp("/tmp", "ab-progress-")
 	if err != nil {
 		t.Fatal(err)
 	}
