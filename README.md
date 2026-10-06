@@ -4,7 +4,7 @@ An adaptive N-WAN policy controller for OpenWrt/mwan3, with a minimal authentica
 
 ## Project status
 
-Design and language comparison stage. There is no installable controller release yet. No source code from KIT BusRouter has been copied into this repository.
+Implementation and integration testing are in progress. There is no validated installable release yet. No source code from KIT BusRouter has been copied into this repository.
 
 The planned first integration target is OpenWrt 24.10.8, mwan3 2.11.16 and the IPv4 iptables-legacy backend. Support for additional versions and firewall backends will require separate verification.
 
@@ -23,6 +23,12 @@ This is connection-based load balancing. It does not combine several WANs within
 
 - [Design](docs/specs/2026-10-06-design.md)
 - [Python versus Go comparison](docs/research/2026-10-06-python-vs-go.md)
+- [Emergency recovery and removal commands](docs/RECOVERY.ru.md)
+- [Calibration, maintenance and probe budgets (Russian)](docs/SCHEDULING.ru.md)
+
+The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by six-hour maintenance probes; an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
+
+Automatic applying will fail closed when the independent recovery watchdog is unavailable. The controller will not flash firmware, change bootloader/LAN/Wi-Fi settings, or persist measured weights to the base mwan3 configuration. These boundaries must be verified before an applying release is enabled; they are not a guarantee against arbitrary defects in a root process.
 
 ## Reference project
 
