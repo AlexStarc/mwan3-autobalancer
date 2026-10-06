@@ -71,11 +71,34 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	sections.push({ '.name': 'duplicate', '.type': 'wan', interface: 'wan' });
 	assert.match(option('override', 'interface').validate('override', 'wan'), /уже существует/);
 	assert.notEqual(option('override', 'interface').validate('override', 'unknown'), true);
-	page.refresh({ apply_ready: true, busy: false, channels: Array.from({ length: 6 }, (_, i) => ({ interface: `wan${i}`, online: true, baseline_weight: 500, proposed_weight: i === 0 ? 1000 : 0, applied_weight: 0, speed_mbps: null, age_seconds: null, probe_state: i === 1 ? 'historical' : i === 2 ? 'measuring' : i === 3 ? 'failed' : 'unknown', budget_used_bytes: 0, budget_limit_bytes: 268435456 })) });
+	page.refresh({ apply_ready: true, busy: false, channels: Array.from({ length: 6 }, (_, i) => ({ interface: `wan${i}`, online: true, enabled: true, metric: 1, baseline_weight: 500, proposed_weight: i === 0 ? 1000 : 0, applied_weight: 0, speed_mbps: null, age_seconds: null, probe_state: i === 1 ? 'historical' : i === 2 ? 'measuring' : i === 3 ? 'failed' : 'unknown', budget_used_bytes: 0, budget_limit_bytes: 268435456 })) });
 	const text = page.summary.text();
 	assert.match(text, /wan5/); assert.match(text, /16.7%/); assert.match(text, /Устарело/); assert.match(text, /Измерение/); assert.match(text, /Неизвестно/); assert.match(text, /Ошибка/);
 	assert.doesNotMatch(text, /0\.00 Мбит/); assert.match(text, /100\.0%/);
+	function findTable(element) { if (element.tag === 'table') return element; for (const child of element.children) if (child instanceof Element) { const table = findTable(child); if (table) return table; } }
+	function rows() { return findTable(page.summary).children.slice(1).map(row => row.children.map(cell => cell.text())); }
+	const channel = (iface, extra = {}) => ({ interface: iface, enabled: true, online: true, metric: 1, baseline_weight: 1000, proposed_weight: 0, applied_weight: 0, speed_mbps: null, age_seconds: null, probe_state: 'unknown', budget_used_bytes: 0, budget_limit_bytes: 268435456, ...extra });
+	page.refresh({ apply_ready: true, phase: 'calibrating', channels: [channel('disabled', { enabled: false }), channel('modem1', { proposed_weight: 200, applied_weight: 333, phase: 'calibrating' }), channel('modem2', { proposed_weight: 300, applied_weight: 333, phase: 'maintenance' }), channel('petra', { proposed_weight: 500, applied_weight: 333, phase: 'holding' }), channel('offline', { online: false, metric: 0 }), channel('reserve', { metric: 2, phase: 'disabled' })] });
+	let tableRows = rows();
+	assert.equal(tableRows[0][1], 'Отключён'); assert.equal(tableRows[0][5], '0.0%');
+	assert.equal(tableRows[1][5], '33.3%'); assert.equal(tableRows[2][5], '33.3%'); assert.equal(tableRows[3][5], '33.3%');
+	assert.equal(tableRows[4][5], '0.0%'); assert.equal(tableRows[5][5], '0.0%');
+	assert.equal(tableRows[1][6], '20.0%'); assert.equal(tableRows[2][6], '30.0%'); assert.equal(tableRows[3][6], '50.0%');
+	assert.equal(tableRows[1][7], '33.3%'); assert.equal(tableRows[0][7], '0.0%');
+	assert.match(page.summary.text(), /фаза: Калибровка/);
+	assert.equal(tableRows[1][2], 'Калибровка'); assert.equal(tableRows[2][2], 'Периодические замеры'); assert.equal(tableRows[3][2], 'Удержание долей'); assert.equal(tableRows[5][2], 'Замеры выключены');
+	page.refresh({ phase: 'error', channels: [channel('spent', { budget_used_bytes: 268435456, probe_error: 'daily probe budget exhausted', probe_state: 'failed', phase: 'error' }), channel('small', { budget_used_bytes: 268435456 - 16 * 1048576 }), channel('inflight', { budget_used_bytes: 268435456, probe_state: 'measuring', probe_error: 'previous failure' }), channel('retry', { budget_used_bytes: 268435456 - 32 * 1048576, probe_error: 'daily probe budget exhausted' })] });
+	tableRows = rows();
+	assert.equal(tableRows[0][3], 'Суточный резерв исчерпан'); assert.equal(tableRows[0][2], 'Ошибка');
+	assert.equal(tableRows[1][3], 'Резерв меньше одного замера');
+	assert.equal(tableRows[2][3], 'Измерение');
+	assert.equal(tableRows[3][3], 'Недостаточно резерва для повторного замера');
+	assert.match(tableRows[0][9], /Суточный резерв исчерпан/); assert.match(page.summary.text(), /фаза: Ошибка/);
+	// Logical-WAN overrides set the minimum future reservation independently.
+	sections = sections.filter(s => s['.type'] !== 'wan'); sections.push({ '.name': 'small_override', '.type': 'wan', interface: 'wan2', probe_bytes: String(16 * 1048576) });
+	page.refresh({ phase: 'maintenance', channels: [channel('wan2', { budget_used_bytes: 268435456 - 16 * 1048576 }), channel('inherited', { budget_used_bytes: 268435456 - 16 * 1048576 })] });
+	assert.equal(rows()[0][3], 'Неизвестно'); assert.equal(rows()[1][3], 'Резерв меньше одного замера');
 	page.refresh({ error: 'status_unavailable' });
 	assert.equal(page.probeButton.disabled, true); assert.equal(page.restoreButton.disabled, false);
-	console.log('LuCI fixtures passed: null/stale/N-WAN shares, safe settings, duplicate overrides, fallback Restore availability');
+	console.log('LuCI fixtures passed: active-group shares, phases, quota exhaustion and measuring precedence, safe settings, fallback Restore');
 })().catch(err => { console.error(err); process.exit(1); });

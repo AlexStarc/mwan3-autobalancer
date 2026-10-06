@@ -330,6 +330,39 @@ reload_service
         self.assertEqual(log.read_text().splitlines(), ['stop', 'restore', 'kill', 'start'])
         self.assertNotIn('mode=observe', (ROOT / 'openwrt/init.d/mwan3-autobalancer').read_text())
 
+    def test_stock_stop_callback_propagates_recovery_failure(self):
+        self.f.lease(restore_requested=True)
+        executable(self.f.lib / 'stop-instances', '#!/bin/sh\nexit 0\n')
+        executable(self.f.lib / 'restore', '#!/bin/sh\nexit 7\n')
+        script = '. ' + shlex.quote(str(self.f.root / 'service')) + '''
+# Model the stock stop contract: stop_service return is ignored, procd_kill
+# runs next, and only the final service_stopped callback can propagate it.
+stop_service
+true
+service_stopped
+'''
+        result = self.f.call('/bin/sh', '-c', script)
+        self.assertEqual(result.returncode, 7)
+        self.assertTrue((self.f.run / 'lease.json').exists())
+
+    def test_real_rc_common_stop_preserves_failed_recovery(self):
+        # Root captured this installed stock file outside the repository. Never
+        # vendor it. CI exercises the equivalent contract above; this local test
+        # additionally runs the actual target wrapper when that reference exists.
+        stock = ROOT.parents[1] / 'work/router-stock-rc.common'
+        if not stock.exists(): self.skipTest('installed stock rc.common reference unavailable')
+        self.f.lease(restore_requested=True)
+        executable(self.f.lib / 'stop-instances', '#!/bin/sh\nexit 0\n')
+        executable(self.f.lib / 'restore', '#!/bin/sh\nexit 7\n')
+        root = self.f.root
+        functions = (root / 'functions.sh').read_text() + '\nlist_contains() { return 0; }\n'
+        executable(root / 'lib/functions.sh', functions)
+        executable(root / 'lib/functions/service.sh', '')
+        executable(root / 'lib/functions/procd.sh', 'procd_lock() { :; }\nprocd_kill() { :; }\n')
+        result = self.f.call('/bin/sh', str(stock), str(root / 'service'), 'stop', env={'IPKG_INSTROOT': str(root)})
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertTrue((self.f.run / 'lease.json').exists())
+
     def test_disabled_config_starts_no_instances(self):
         script = '. ' + shlex.quote(str(self.f.root / 'service')) + '''
 config_load() { :; }; config_get_bool() { export "$1=0"; }

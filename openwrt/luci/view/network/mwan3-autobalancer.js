@@ -25,8 +25,27 @@ function next(value) {
 	return isNaN(date.getTime()) || date.getFullYear() < 2000 ? '—' : date.toLocaleString();
 }
 function percent(weight, total) { return known(weight) && total > 0 ? (100 * weight / total).toFixed(1) + '%' : '—'; }
+function phase(value) {
+	return { disabled: 'Замеры выключены', calibrating: 'Калибровка', maintenance: 'Периодические замеры', holding: 'Удержание долей', error: 'Ошибка' }[value] || value || '—';
+}
+function probeBytes(iface) {
+	var overrides = uci.sections('mwan3_autobalancer', 'wan').filter(function(s) { return s.interface === iface; });
+	var value = overrides.length === 1 ? overrides[0].probe_bytes : null;
+	if (value == null || value === '') value = uci.get('mwan3_autobalancer', 'main', 'probe_bytes');
+	return value != null && value !== '' && known(Number(value)) ? Number(value) : null;
+}
+function budgetState(channel) {
+	if (!known(channel.budget_used_bytes) || !known(channel.budget_limit_bytes)) return '';
+	var remaining = Math.max(0, channel.budget_limit_bytes - channel.budget_used_bytes), bytes = probeBytes(channel.interface);
+	if (remaining === 0) return 'Суточный резерв исчерпан';
+	if (bytes !== null && remaining < bytes) return 'Резерв меньше одного замера';
+	if ((channel.probe_error || '').includes('daily probe budget exhausted')) return 'Недостаточно резерва для повторного замера';
+	return '';
+}
 function state(channel) {
 	if (channel.probe_state === 'measuring') return 'Измерение';
+	var budget = budgetState(channel);
+	if (budget) return budget;
 	if (channel.probe_error || channel.probe_state === 'failed') return 'Ошибка';
 	if (channel.probe_state === 'historical') return 'Устарело';
 	if (known(channel.speed_mbps)) return 'Актуально';
@@ -41,22 +60,26 @@ return view.extend({
 		this.report = report || { error: 'status_unavailable' };
 		var r = this.report, channels = Array.isArray(r.channels) ? r.channels : [];
 		var sums = { baseline_weight: 0, proposed_weight: 0, applied_weight: 0 };
+		var lowest = channels.reduce(function(metric, c) { return c.online && c.enabled && known(c.metric) ? Math.min(metric, c.metric) : metric; }, Infinity);
+		function active(c) { return c.online && c.enabled && c.metric === lowest; }
 		channels.forEach(function(c) {
-			Object.keys(sums).forEach(function(key) { if (known(c[key])) sums[key] += c[key]; });
+			if (active(c) && known(c.baseline_weight)) sums.baseline_weight += c.baseline_weight;
+			['proposed_weight', 'applied_weight'].forEach(function(key) { if (known(c[key])) sums[key] += c[key]; });
 		});
 		var table = E('table', { 'class': 'table' }, [E('tr', { 'class': 'tr table-titles' },
-			['WAN', 'Доступность', 'Измерение', 'Скорость / возраст', 'Штатная доля', 'Предложено', 'Применено', 'Следующий замер', 'Резерв / лимит за сутки'].map(function(t) { return E('th', { 'class': 'th' }, t); }))]);
+			['WAN', 'Доступность', 'Фаза', 'Измерение', 'Скорость / возраст', 'Штатная доля', 'Предложено', 'Применено', 'Следующий замер', 'Резерв / лимит за сутки'].map(function(t) { return E('th', { 'class': 'th' }, t); }))]);
 		channels.forEach(function(c) {
-			var values = [c.interface || '—', c.online ? 'Онлайн' : 'Офлайн', state(c),
+			var budget = budgetState(c);
+			var values = [c.interface || '—', !c.enabled ? 'Отключён' : c.online ? 'Онлайн' : 'Офлайн', phase(c.phase), state(c),
 				(known(c.speed_mbps) ? c.speed_mbps.toFixed(2) + ' Мбит/с' : '—') + ' / ' + age(c.age_seconds),
-				percent(c.baseline_weight, sums.baseline_weight), percent(c.proposed_weight, sums.proposed_weight), percent(c.applied_weight, sums.applied_weight),
-				next(c.next_probe_at), known(c.budget_used_bytes) && known(c.budget_limit_bytes) ? (c.budget_used_bytes / MiB).toFixed(1) + ' / ' + (c.budget_limit_bytes / MiB).toFixed(1) + ' МиБ' : '—'];
+				active(c) ? percent(c.baseline_weight, sums.baseline_weight) : '0.0%', percent(c.proposed_weight, sums.proposed_weight), percent(c.applied_weight, sums.applied_weight),
+				next(c.next_probe_at), known(c.budget_used_bytes) && known(c.budget_limit_bytes) ? (c.budget_used_bytes / MiB).toFixed(1) + ' / ' + (c.budget_limit_bytes / MiB).toFixed(1) + ' МиБ' + (budget ? ' — ' + budget : '') : '—'];
 			table.appendChild(E('tr', { 'class': 'tr', 'title': c.probe_error || '' }, values.map(function(v) { return E('td', { 'class': 'td' }, v); })));
 		});
-		if (!channels.length) table.appendChild(E('tr', {}, E('td', { 'colspan': 9 }, 'Данные каналов недоступны')));
+		if (!channels.length) table.appendChild(E('tr', {}, E('td', { 'colspan': 10 }, 'Данные каналов недоступны')));
 		dom.content(this.summary, [
 			E('p', {}, r.error ? 'Контроллер недоступен. Восстановление штатной политики доступно независимо от него.' :
-				'Политика: ' + (r.policy || '—') + '; режим: ' + (r.mode === 'automatic' ? 'Автоматический' : 'Наблюдение') + '; следующий замер: ' + next(r.next_probe_at)),
+				'Политика: ' + (r.policy || '—') + '; режим: ' + (r.mode === 'automatic' ? 'Автоматический' : 'Наблюдение') + '; фаза: ' + phase(r.phase) + '; следующий замер: ' + next(r.next_probe_at)),
 			E('p', {}, r.apply_ready ? 'Автоматическое применение доступно.' : 'Автоматическое применение недоступно: ' + (r.apply_unavailable_reason || r.compatibility_error || r.error || 'ожидание проверки')),
 			r.last_error ? E('p', { 'class': 'alert-message warning' }, r.last_error) : '',
 			E('div', { 'style': 'overflow-x:auto' }, table),

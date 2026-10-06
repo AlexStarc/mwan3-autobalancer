@@ -31,6 +31,7 @@ start_service() {
 stop_service() {
 	# rc.common calls stop_service BEFORE procd_kill. Explicitly quiesce our
 	# instances first so a late controller tick cannot reapply after recovery.
+	AB_STOP_RESULT=1
 	/usr/libexec/mwan3-autobalancer/stop-instances || return 1
 	local policy
 	. /usr/libexec/mwan3-autobalancer/common.sh
@@ -41,6 +42,14 @@ stop_service() {
 		policy=$(ab_selected_policy) || return 1
 	fi
 	/usr/libexec/mwan3-autobalancer/restore "$policy"
+	AB_STOP_RESULT=$?
+	return "$AB_STOP_RESULT"
+}
+
+service_stopped() {
+	# rc.common ignores stop_service's return, then calls this callback last.
+	# Propagate recovery failure so opkg prerm cannot remove a needed watchdog.
+	return "${AB_STOP_RESULT:-1}"
 }
 
 reload_service() {
