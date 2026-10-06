@@ -11,6 +11,24 @@ var status = rpc.declare({ object: 'mwan3.autobalancer', method: 'status', expec
 var probe = rpc.declare({ object: 'mwan3.autobalancer', method: 'probe', expect: {} });
 var rollback = rpc.declare({ object: 'mwan3.autobalancer', method: 'rollback', expect: {} });
 var MiB = 1048576;
+var columnTitles = ['WAN', 'Доступность', 'Фаза', 'Измерение', 'Скорость / возраст', 'Штатная доля', 'Предложено', 'Применено', 'Следующий замер', 'Резерв / лимит за сутки'];
+var pageCSS = '.mwan3-ab-view{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-wrap:anywhere}' +
+	'.mwan3-ab-view .mwan3-ab-table-wrap{max-width:100%;overflow-x:auto}' +
+	'.mwan3-ab-view .mwan3-ab-actions{display:flex;flex-wrap:wrap;gap:.75rem;justify-content:flex-start}' +
+	'.mwan3-ab-view .mwan3-ab-actions button{max-width:100%;white-space:normal}' +
+	'@media(max-width:640px){' +
+	'.mwan3-ab-view .mwan3-ab-table-wrap{overflow:visible}' +
+	'.mwan3-ab-view .mwan3-ab-table,.mwan3-ab-view .mwan3-ab-table tbody{display:block;width:100%;min-width:0}' +
+	'.mwan3-ab-view .mwan3-ab-table .table-titles{display:none}' +
+	'.mwan3-ab-view .mwan3-ab-table .mwan3-ab-channel{display:block;margin:0 0 1rem;border:1px solid #ddd;border-radius:.3rem;padding:.5rem}' +
+	'.mwan3-ab-view .mwan3-ab-table .td{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:.75rem;width:auto!important;min-width:0!important;max-width:100%;box-sizing:border-box;padding:.4rem .25rem;text-align:left;white-space:normal;overflow-wrap:anywhere}' +
+	'.mwan3-ab-view .mwan3-ab-table .td:before{content:attr(data-title);font-weight:600}' +
+	'.mwan3-ab-view .cbi-map,.mwan3-ab-view .cbi-section,.mwan3-ab-view .cbi-value{min-width:0!important;max-width:100%;box-sizing:border-box}' +
+	'.mwan3-ab-view .cbi-value{display:block;width:100%!important}' +
+	'.mwan3-ab-view .cbi-value-title,.mwan3-ab-view .cbi-value-field{display:block;float:none!important;width:100%!important;min-width:0!important;max-width:100%;margin:0!important;padding:.35rem 0!important;box-sizing:border-box;text-align:left}' +
+	'.mwan3-ab-view .cbi-value-field input:not([type=checkbox]):not([type=radio]),.mwan3-ab-view .cbi-value-field select,.mwan3-ab-view .cbi-value-field .cbi-dropdown{width:100%!important;min-width:0!important;max-width:100%;box-sizing:border-box}' +
+	'.mwan3-ab-view .cbi-value-description{max-width:100%;white-space:normal}' +
+	'}';
 
 function known(value) { return typeof value === 'number' && isFinite(value) && value >= 0; }
 function age(value) {
@@ -56,6 +74,22 @@ return view.extend({
 	load: function() {
 		return Promise.all([status().catch(function() { return { error: 'status_unavailable' }; }), uci.load('mwan3_autobalancer'), uci.load('mwan3')]);
 	},
+	headerSpacing: function() {
+		if (!this.root || !this.root.isConnected) return;
+		var top = this.root.getBoundingClientRect().top + (window.scrollY || 0), bottom = 0;
+		document.querySelectorAll('header,.navbar,.navbar-fixed-top,#header,#mainmenu,#topmenu').forEach(function(el) {
+			var rect = el.getBoundingClientRect(), ancestor = el, pinned = false;
+			while (ancestor) {
+				var css = window.getComputedStyle(ancestor), box = ancestor.getBoundingClientRect();
+				if ((css.position === 'fixed' || css.position === 'sticky') && box.top <= 0) { pinned = true; break; }
+				ancestor = ancestor.parentElement;
+			}
+			// Some stock themes let a relative menu extend outside the fixed header.
+			if (pinned && rect.width > 0 && rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+		});
+		// Document coordinates keep the same clearance when polling while scrolled.
+		this.root.style.paddingTop = bottom > top ? Math.ceil(bottom - top + 12) + 'px' : '0px';
+	},
 	refresh: function(report) {
 		this.report = report || { error: 'status_unavailable' };
 		var r = this.report, channels = Array.isArray(r.channels) ? r.channels : [];
@@ -66,15 +100,15 @@ return view.extend({
 			if (active(c) && known(c.baseline_weight)) sums.baseline_weight += c.baseline_weight;
 			['proposed_weight', 'applied_weight'].forEach(function(key) { if (known(c[key])) sums[key] += c[key]; });
 		});
-		var table = E('table', { 'class': 'table' }, [E('tr', { 'class': 'tr table-titles' },
-			['WAN', 'Доступность', 'Фаза', 'Измерение', 'Скорость / возраст', 'Штатная доля', 'Предложено', 'Применено', 'Следующий замер', 'Резерв / лимит за сутки'].map(function(t) { return E('th', { 'class': 'th' }, t); }))]);
+		var table = E('table', { 'class': 'table mwan3-ab-table' }, [E('tr', { 'class': 'tr table-titles' },
+			columnTitles.map(function(t) { return E('th', { 'class': 'th' }, t); }))]);
 		channels.forEach(function(c) {
 			var budget = budgetState(c);
 			var values = [c.interface || '—', !c.enabled ? 'Отключён' : c.online ? 'Онлайн' : 'Офлайн', phase(c.phase), state(c),
 				(known(c.speed_mbps) ? c.speed_mbps.toFixed(2) + ' Мбит/с' : '—') + ' / ' + age(c.age_seconds),
 				active(c) ? percent(c.baseline_weight, sums.baseline_weight) : '0.0%', percent(c.proposed_weight, sums.proposed_weight), percent(c.applied_weight, sums.applied_weight),
 				next(c.next_probe_at), known(c.budget_used_bytes) && known(c.budget_limit_bytes) ? (c.budget_used_bytes / MiB).toFixed(1) + ' / ' + (c.budget_limit_bytes / MiB).toFixed(1) + ' МиБ' + (budget ? ' — ' + budget : '') : '—'];
-			table.appendChild(E('tr', { 'class': 'tr', 'title': c.probe_error || '' }, values.map(function(v) { return E('td', { 'class': 'td' }, v); })));
+			table.appendChild(E('tr', { 'class': 'tr mwan3-ab-channel', 'title': c.probe_error || '' }, values.map(function(v, i) { return E('td', { 'class': 'td', 'data-title': columnTitles[i] }, E('span', {}, v)); })));
 		});
 		if (!channels.length) table.appendChild(E('tr', {}, E('td', { 'colspan': 10 }, 'Данные каналов недоступны')));
 		dom.content(this.summary, [
@@ -82,11 +116,12 @@ return view.extend({
 				'Политика: ' + (r.policy || '—') + '; режим: ' + (r.mode === 'automatic' ? 'Автоматический' : 'Наблюдение') + '; фаза: ' + phase(r.phase) + '; следующий замер: ' + next(r.next_probe_at)),
 			E('p', {}, r.apply_ready ? 'Автоматическое применение доступно.' : 'Автоматическое применение недоступно: ' + (r.apply_unavailable_reason || r.compatibility_error || r.error || 'ожидание проверки')),
 			r.last_error ? E('p', { 'class': 'alert-message warning' }, r.last_error) : '',
-			E('div', { 'style': 'overflow-x:auto' }, table),
+			E('div', { 'class': 'mwan3-ab-table-wrap' }, table),
 			E('p', {}, 'Скорость — оценка по завершённым тестовым загрузкам. Резерв включает запланированный объём; это не счётчик фактического трафика. Лимит действует отдельно для каждого WAN, сутки — UTC.')
 		]);
 		this.probeButton.disabled = !!r.error || !!r.busy || this.actionBusy;
 		this.restoreButton.disabled = this.actionBusy;
+		this.headerSpacing();
 		var mode = this.modeOption.getUIElement('main');
 		if (mode && mode.node) {
 			mode.node.querySelectorAll('[data-value="automatic"], option[value="automatic"]').forEach(function(el) {
@@ -131,9 +166,16 @@ return view.extend({
 		};
 		o = s.option(form.ListValue, 'schedule_mode', 'Расписание'); o.value('hybrid', 'После изменений и периодически'); o.value('on-change', 'Только после изменений'); o.rmempty = false;
 		function interval(section, optional) {
-			var v = section.option(form.Value, 'interval_seconds', 'Интервал, секунды', optional ? 'Пустое поле наследует общее значение.' : 'По умолчанию 21600 (6 часов); используется периодическим расписанием.');
+			var v = section.option(form.Value, 'interval_seconds', 'Интервал, часы', optional ? 'Пустое поле наследует общее значение.' : 'По умолчанию 6 часов; используется периодическим расписанием.');
 			v.rmempty = optional;
-			v.validate = function(id, value) { return optional && value === '' || /^[0-9]+$/.test(value) && Number(value) >= 60 && Number(value) <= 604800 ? true : 'Укажите целое число от 60 до 604800'; };
+			v.cfgvalue = function(id) { var value = uci.get('mwan3_autobalancer', id, 'interval_seconds'); return value == null || value === '' ? '' : String(Number(value) / 3600); };
+			function seconds(value) { return Number(value.replace(',', '.')) * 3600; }
+			v.validate = function(id, value) {
+				if (optional && value === '') return true;
+				var n = seconds(value), rounded = Math.round(n);
+				return /^[0-9]+([.,][0-9]+)?$/.test(value) && Number.isSafeInteger(rounded) && Math.abs(n - rounded) < 0.0000001 && rounded >= 60 && rounded <= 604800 ? true : 'Укажите от 1 минуты до 168 часов с точностью до целой секунды';
+			};
+			v.write = function(id, value) { if (optional && value === '') uci.unset('mwan3_autobalancer', id, 'interval_seconds'); else uci.set('mwan3_autobalancer', id, 'interval_seconds', String(Math.round(seconds(value)))); };
 			return v;
 		}
 		function effective(id, name) {
@@ -183,7 +225,9 @@ return view.extend({
 		return m.render().then(function(node) {
 			this.refresh(this.report);
 			poll.add(function() { return status().then(this.refresh.bind(this)).catch(function() { this.refresh({ error: 'status_unavailable' }); }.bind(this)); }.bind(this), 5);
-			return E('div', {}, [this.summary, E('div', { 'class': 'cbi-page-actions' }, [this.probeButton, ' ', this.restoreButton]), node]);
+			this.root = E('div', { 'class': 'mwan3-ab-view' }, [E('style', {}, pageCSS), this.summary, E('div', { 'class': 'cbi-page-actions mwan3-ab-actions' }, [this.probeButton, this.restoreButton]), node]);
+			requestAnimationFrame(this.headerSpacing.bind(this));
+			return this.root;
 		}.bind(this));
 	}
 });
