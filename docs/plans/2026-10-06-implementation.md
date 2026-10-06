@@ -6,7 +6,7 @@
 
 **Architecture:** Pure-Go controller orchestrates bounded curl probes through stock mwan3, discovers members through validated UCI/ubus data, persists probe budgets and updates only one existing IPv4 policy chain atomically under the stock procd lock. LuCI JS uses a narrow rpcd CLI bridge and existing ACL/authentication. An independent shell watchdog and stock mwan3 recovery remain usable if Go fails.
 
-**Tech stack:** Go 1.24+ standard library, CGO_ENABLED=0 release profile, OpenWrt mwan3 2.11.16/iptables-legacy, curl, procd/rpcd/LuCI.
+**Tech stack:** Go 1.23+ standard library (SDK baseline 1.23.12), CGO_ENABLED=0 release profile, OpenWrt mwan3 2.11.16/iptables-legacy, curl, procd/rpcd/LuCI.
 
 ## File boundaries and shared contract
 

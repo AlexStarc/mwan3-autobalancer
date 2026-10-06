@@ -28,6 +28,8 @@ This is connection-based load balancing. It does not combine several WANs within
 
 The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by six-hour maintenance probes; an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
 
+The module supports Go 1.23 and later. CI checks the SDK's Go 1.23.12 baseline alongside Go 1.27.1; the router needs neither a compiler nor a Python runtime.
+
 Automatic applying will fail closed when the independent recovery watchdog is unavailable. The controller will not flash firmware, change bootloader/LAN/Wi-Fi settings, or persist measured weights to the base mwan3 configuration. These boundaries must be verified before an applying release is enabled; they are not a guarantee against arbitrary defects in a root process.
 
 ## Reference project
