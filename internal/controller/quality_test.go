@@ -163,6 +163,12 @@ func TestRunnerOwnerDeathStopsActiveCommandsBeforeRecovery(t *testing.T) {
 						t.Fatal("recovery could not acquire released stock lock", err)
 					}
 					defer unlock()
+					// Restore immediately: polling must never erase a surviving command's late write.
+					if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("stock-restored"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					restoredAt := time.Now()
+					cleanupDeadline := restoredAt.Add(500 * time.Millisecond)
 					for _, name := range []string{"command.pid", "child.pid"} {
 						data, err := os.ReadFile(filepath.Join(dir, name))
 						if err != nil {
@@ -174,14 +180,21 @@ func TestRunnerOwnerDeathStopsActiveCommandsBeforeRecovery(t *testing.T) {
 						}
 						defer syscall.Kill(pid, syscall.SIGKILL)
 						stat := runnerProcessState(t, pid)
+						// An unlocked probe has no shared stock lock: its EOF monitor needs CPU
+						// after owner death. Applying commands must already be dead when recovery
+						// acquires their inherited lock, so that variant keeps the immediate check.
+						if !locked {
+							for stat != "" && !strings.HasPrefix(stat, "Z") && time.Now().Before(cleanupDeadline) {
+								time.Sleep(10 * time.Millisecond)
+								stat = runnerProcessState(t, pid)
+							}
+							t.Logf("unlocked %s cleanup observed after %s", name, time.Since(restoredAt))
+						}
 						if stat != "" && !strings.HasPrefix(stat, "Z") {
 							t.Errorf("active command survived owner death/recovery lock: %s %d %s", name, pid, stat)
 						}
 					}
-					if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("stock-restored"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					time.Sleep(1200 * time.Millisecond)
+					time.Sleep(time.Until(restoredAt.Add(1200 * time.Millisecond)))
 					data, err := os.ReadFile(filepath.Join(dir, "policy"))
 					if err != nil || string(data) != "stock-restored" {
 						t.Fatal("late apply overwrote independent restoration", string(data), err)
@@ -219,7 +232,15 @@ func runnerProcessState(t *testing.T, pid int) string {
 		return string(data[end+2])
 	}
 	state, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil && syscall.Kill(pid, 0) != syscall.ESRCH {
+	if err != nil {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return ""
+		}
+		if errors.Is(err, os.ErrPermission) {
+			// Restricted macOS environments can deny ps. Conservatively count an
+			// existing PID as alive rather than claiming cleanup without evidence.
+			return "unknown-alive"
+		}
 		t.Fatal("could not inspect owned process", pid, err)
 	}
 	return strings.TrimSpace(string(state))
