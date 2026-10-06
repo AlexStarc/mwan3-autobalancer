@@ -1,0 +1,65 @@
+#!/bin/sh
+# Only called by restore, which owns the shared stock lock. Invoke installed stock
+# code rather than shipping a copied mwan3 implementation or an old UCI snapshot.
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /lib/mwan3/mwan3.sh
+. /usr/libexec/mwan3-autobalancer/common.sh
+policy=$1
+AB_RESTORE_DIR=$2
+AB_RESTORE_POLICY=$policy
+export AB_RESTORE_DIR AB_RESTORE_POLICY
+ab_policy "$policy" && [ -d "$AB_RESTORE_DIR" ] || exit 2
+config_load mwan3
+config_get type "$policy" TYPE
+[ "$type" = policy ] || { echo 'selected stock policy missing' >&2; exit 1; }
+invalid=0; members=0
+validate_member() {
+	local iface metric weight family type device
+	ab_id "$1" || { invalid=1; return; }
+	config_get type "$1" TYPE
+	config_get iface "$1" interface
+	config_get metric "$1" metric 1
+	config_get weight "$1" weight 1
+	ab_id "$iface" && [ "$type" = member ] || { invalid=1; return; }
+	case "$metric:$weight" in *[!0-9:]*) invalid=1; return;; esac
+	[ "${#metric}" -le 7 ] && [ "${#weight}" -le 7 ] && [ "$metric" -ge 1 ] && [ "$metric" -le 1000000 ] && [ "$weight" -ge 1 ] && [ "$weight" -le 1000000 ] || { invalid=1; return; }
+	config_get family "$iface" family ipv4
+	case "$family" in ipv4|ipv6) ;; *) invalid=1; return;; esac
+	network_get_device device "$iface"
+	case "$device" in [!A-Za-z0-9_]*|*[!A-Za-z0-9_.:-]*) invalid=1;; esac
+	[ "${#device}" -le 15 ] || invalid=1
+	members=$((members+1))
+}
+config_list_foreach "$policy" use_member validate_member
+[ "$invalid" = 0 ] && [ "$members" -gt 0 ] && [ "$members" -le 64 ] || { echo 'unsafe or unsupported stock policy members' >&2; exit 1; }
+config_get resort "$policy" last_resort unreachable
+case "$resort" in default|unreachable|blackhole) ;; *) echo 'unsupported stock last_resort' >&2; exit 1;; esac
+IPT4='/usr/libexec/mwan3-autobalancer/stock-iptables ipt4'
+IPT6='/usr/libexec/mwan3-autobalancer/stock-iptables ipt6'
+IPT4R='/usr/libexec/mwan3-autobalancer/stock-iptables restore4'
+IPT6R='/usr/libexec/mwan3-autobalancer/stock-iptables restore6'
+mwan3_init || exit 1
+case "$MMX_MASK" in 0x[0-9a-fA-F]*) ;; *) exit 1;; esac
+case "${MMX_MASK#0x}" in ''|*[!0-9a-fA-F]*) exit 1;; esac
+[ "${#MMX_MASK}" -le 10 ] || exit 1
+restore_failed=0
+LOG() {
+	# Stock calls LOG in its parent shell after a failed restore subprocess.
+	# Also latch there, so a full runtime filesystem cannot hide the failure.
+	[ "$1" != error ] || restore_failed=1
+	logger -t mwan3-autobalancer "$*"
+}
+mwan3_create_policies_iptables "$policy"
+[ "$restore_failed" = 0 ] && [ ! -e "$AB_RESTORE_DIR/failed" ] || exit 1
+for family in 4 6; do
+	[ "$family" = 6 ] && [ "$NO_IPV6" -ne 0 ] && continue
+	[ -s "$AB_RESTORE_DIR/expected$family" ] || exit 1
+	case "$family" in 4) binary=iptables;; 6) binary=ip6tables;; esac
+	"$binary" -t mangle -w 2 -S "mwan3_policy_$policy" > "$AB_RESTORE_DIR/actual$family" || exit 1
+	awk -v chain="mwan3_policy_$policy" -v updates=1 -f "$AB_LIB/leaf.awk" "$AB_RESTORE_DIR/expected$family" > "$AB_RESTORE_DIR/want$family" || exit 1
+	awk -v chain="mwan3_policy_$policy" -f "$AB_LIB/leaf.awk" "$AB_RESTORE_DIR/actual$family" > "$AB_RESTORE_DIR/got$family" || exit 1
+	# iptables-save random probabilities are quantized by the kernel; leaf.awk
+	# normalizes them to stock's three decimal places with a small tolerance.
+	cmp -s "$AB_RESTORE_DIR/want$family" "$AB_RESTORE_DIR/got$family" || { echo 'restored selected leaf differs from stock updates' >&2; exit 1; }
+done

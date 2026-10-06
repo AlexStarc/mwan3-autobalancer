@@ -1,0 +1,60 @@
+#!/bin/sh
+. /usr/share/libubox/jshn.sh
+LIB=/usr/libexec/mwan3-autobalancer
+error() { printf '{"error":"%s"}\n' "$1"; }
+empty_request() {
+	# uhttpd adds this authenticated session envelope before invoking ubus.
+	# Only that metadata is accepted; it is never forwarded to any command.
+	local input compact session kind
+	input=$(head -c 4097)
+	[ "${#input}" -le 4096 ] || return 1
+	compact=$(printf '%s' "$input" | tr -d ' \t\r\n')
+	[ "$compact" != '{}' ] || return 0
+	# A closed wire grammar also rejects duplicate keys and trailing JSON,
+	# even if the platform JSON parser would otherwise accept them.
+	printf '%s\n' "$compact" | grep -Eq '^\{"ubus_rpc_session":"[0-9a-fA-F]{32}"\}$' || return 1
+	json_load "$input" || return 1
+	json_get_type kind ubus_rpc_session; [ "$kind" = string ] || return 1
+	json_get_var session ubus_rpc_session
+	case "$session" in *[!0-9a-fA-F]*) return 1;; esac
+	[ "${#session}" = 32 ]
+}
+controller_available() {
+	local data pid
+	[ -x /usr/bin/mwan3-autobalancer ] && [ -S /var/run/mwan3-autobalancer/control.sock ] || return 1
+	data=$("$LIB/bounded" 3 ubus call service list '{"name":"mwan3-autobalancer"}') || return 1
+	pid=$(printf '%s' "$data" | jsonfilter -e '@["mwan3-autobalancer"].instances.controller.pid')
+	. "$LIB/common.sh"
+	ab_owner_alive "$pid"
+}
+case "$1" in
+	list) printf '{"status":{},"probe":{},"rollback":{}}\n';;
+	call)
+		[ "$#" -eq 2 ] && empty_request || { error invalid_request; exit 0; }
+		case "$2" in
+			status)
+				output=$("$LIB/bounded" 6 /usr/bin/mwan3-autobalancer status 2>/dev/null)
+				if [ "$?" = 0 ] && json_load "$output"; then printf '%s\n' "$output"; else error status_unavailable; fi
+				;;
+			probe)
+				output=$("$LIB/bounded" 5 /usr/bin/mwan3-autobalancer probe 2>/dev/null)
+				if json_load "$output"; then printf '%s\n' "$output"; else error probe_unavailable; fi
+				;;
+			rollback)
+				if controller_available; then
+					output=$("$LIB/bounded" 40 /usr/bin/mwan3-autobalancer rollback 2>/dev/null)
+					result=$?
+					if [ "$result" = 0 ] && json_load "$output"; then
+						printf '%s\n' "$output"
+					elif controller_available; then error restore_failed
+					else "$LIB/fallback-rollback" 2>/dev/null || error restore_failed
+					fi
+				else
+					"$LIB/fallback-rollback" 2>/dev/null || error restore_failed
+				fi
+				;;
+			*) error unknown_method;;
+		esac
+		;;
+	*) exit 2;;
+esac

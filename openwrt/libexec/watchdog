@@ -1,0 +1,34 @@
+#!/bin/sh
+. /usr/libexec/mwan3-autobalancer/common.sh
+umask 077
+mkdir -p "$AB_RUN" || exit 1
+chmod 700 "$AB_RUN" || exit 1
+# One independent watcher only; flock is supplied by BusyBox on the supported target.
+exec 8> "$AB_RUN/watchdog.lock"
+flock -n 8 || exit 1
+cleanup() {
+	trap - EXIT INT TERM
+	local pid
+	if ab_json_file "$AB_RUN/watchdog.ready"; then
+		json_get_var pid pid
+		[ "$pid" != "$$" ] || rm -f "$AB_RUN/watchdog.ready"
+	fi
+	rm -f "$AB_RUN/.watchdog.ready.$$"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+while :; do
+	up=$(ab_uptime) || exit 1
+	printf '{"pid":%s,"uptime":%s}\n' "$$" "$up" > "$AB_RUN/.watchdog.ready.$$" || exit 1
+	mv -f "$AB_RUN/.watchdog.ready.$$" "$AB_RUN/watchdog.ready" || exit 1
+	if [ -e "$AB_RUN/lease.json" ]; then
+		if ab_lease; then
+			if ab_expired; then
+				"$AB_LIB/restore" "$lease_policy" "$lease_session" || logger -t mwan3-autobalancer 'independent restore failed; lease retained'
+			fi
+		else
+			logger -t mwan3-autobalancer 'invalid lease; refusing unsafe recovery'
+		fi
+	fi
+	sleep 5 & wait $!
+done

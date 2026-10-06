@@ -1,0 +1,35 @@
+#!/bin/sh
+. /usr/libexec/mwan3-autobalancer/common.sh
+umask 077
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] && ab_policy "$1" || exit 2
+policy=$1; expected=${2:-}; old_pid=
+if [ -n "$expected" ]; then
+	ab_session "$expected" && ab_lease && [ "$lease_policy" = "$policy" ] && [ "$lease_session" = "$expected" ] || exit 3
+	old_pid=$lease_pid
+fi
+mkdir -p "$AB_RUN" /var/lock || exit 1
+exec 9> /var/lock/procd_mwan3.lock
+attempt=0
+until flock -n 9; do
+	attempt=$((attempt+1)); [ "$attempt" -lt 5 ] || { echo 'mwan3 lock busy' >&2; exit 1; }
+	sleep 1
+done
+# All ownership decisions are repeated under the same lock used by stock mwan3 and Go.
+if [ -e "$AB_RUN/lease.json" ]; then
+	ab_lease && [ "$lease_policy" = "$policy" ] || { echo 'invalid or different lease' >&2; exit 1; }
+	if [ -n "$expected" ]; then
+		[ "$lease_pid" = "$old_pid" ] && [ "$lease_session" = "$expected" ] && ab_expired || exit 3
+	fi
+else
+	[ -z "$expected" ] || exit 3
+	[ "$(ab_selected_policy)" = "$policy" ] || { echo 'policy is not selected' >&2; exit 1; }
+fi
+dir=$(mktemp -d "$AB_RUN/restore.XXXXXX") || exit 1
+trap 'rm -rf "$dir"' EXIT
+trap 'exit 143' INT TERM
+if ! "$AB_LIB/bounded" 20 "$AB_LIB/stock-restore" "$policy" "$dir"; then
+	echo 'stock restoration failed; lease retained' >&2
+	exit 1
+fi
+# Keep a failed-recovery latch/lease intact on every error above. Never touch budgets.
+rm -f "$AB_RUN/lease.json"

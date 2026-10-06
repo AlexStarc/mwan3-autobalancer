@@ -1,0 +1,46 @@
+#!/bin/sh
+# A separate process group holds its leader until cleanup, avoiding PID reuse.
+# This root-only internal helper is not exposed through rpcd.
+limit=$1; shift
+case "$limit" in ''|*[!0-9]*) exit 2;; esac
+[ "$limit" -ge 1 ] && [ "$limit" -le 60 ] && [ "$#" -gt 0 ] || exit 2
+umask 077
+dir=$(mktemp -d /var/run/mwan3-ab-bound.XXXXXX) || exit 1
+leader=
+cleanup() {
+	trap - EXIT INT TERM
+	if [ -n "$leader" ]; then
+		kill -KILL "-$leader" 2>/dev/null
+		wait "$leader" 2>/dev/null
+	fi
+	rm -rf "$dir"
+}
+trap cleanup EXIT
+trap 'exit 143' INT TERM
+setsid /bin/sh -c '
+	set +m
+	ulimit -f 512
+	dir=$1; limit=$2; shift 2
+	# Self-destruct the complete group if our outer supervisor is killed itself.
+	group=$$
+	(sleep "$((limit+5))"; kill -KILL "-$group" 2>/dev/null) &
+	"$@" > "$dir/out" 2> "$dir/err" &
+	child=$!
+	wait "$child"; rc=$?
+	printf "%s\n" "$rc" > "$dir/done"
+	while :; do sleep 1; done
+' mwan3-ab-bounded "$dir" "$limit" "$@" &
+leader=$!
+elapsed=0
+while [ ! -f "$dir/done" ] && [ "$elapsed" -lt "$limit" ]; do
+	sleep 1; elapsed=$((elapsed+1))
+done
+if [ -f "$dir/done" ]; then
+	read -r result < "$dir/done"
+else
+	result=124
+	printf '%s\n' 'operation timed out' >&2
+fi
+[ ! -f "$dir/out" ] || cat "$dir/out"
+[ ! -f "$dir/err" ] || cat "$dir/err" >&2
+exit "$result"

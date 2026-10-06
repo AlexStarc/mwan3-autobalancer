@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	local enabled
+	config_load mwan3_autobalancer
+	config_get_bool enabled main enabled 0
+	[ "$enabled" = 1 ] || return 0
+	umask 077
+	mkdir -p /var/run/mwan3-autobalancer /etc/mwan3-autobalancer || return 1
+	chmod 700 /var/run/mwan3-autobalancer /etc/mwan3-autobalancer || return 1
+	# Watchdog survives controller failure; both instances stop after three fast failures.
+	procd_open_instance watchdog
+	procd_set_param command /usr/libexec/mwan3-autobalancer/watchdog
+	procd_set_param respawn 3600 10 3
+	procd_set_param term_timeout 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+	procd_open_instance controller
+	procd_set_param command /usr/bin/mwan3-autobalancer daemon
+	procd_set_param respawn 3600 10 3
+	procd_set_param term_timeout 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	# rc.common calls stop_service BEFORE procd_kill. Explicitly quiesce our
+	# instances first so a late controller tick cannot reapply after recovery.
+	/usr/libexec/mwan3-autobalancer/stop-instances || return 1
+	local policy
+	. /usr/libexec/mwan3-autobalancer/common.sh
+	if [ -e "$AB_RUN/lease.json" ]; then
+		ab_lease || return 1
+		policy=$lease_policy
+	else
+		policy=$(ab_selected_policy) || return 1
+	fi
+	/usr/libexec/mwan3-autobalancer/restore "$policy"
+}
+
+reload_service() {
+	# Default procd reload would only call start_service, leaving disabled instances.
+	# Preserve the user's configured mode on ordinary reload.
+	stop_service || return 1
+	procd_kill mwan3-autobalancer
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger mwan3_autobalancer
+}

@@ -1,0 +1,19 @@
+#!/bin/sh
+. /usr/libexec/mwan3-autobalancer/common.sh
+umask 077
+# Called only after rpcd has proved the controller unavailable. Mode must be
+# persisted before quiescing, to prevent any configured automatic respawn.
+uci -q set mwan3_autobalancer.main.mode=observe && uci -q commit mwan3_autobalancer || exit 1
+"$AB_LIB/stop-instances" || exit 1
+if [ -e "$AB_RUN/lease.json" ]; then
+	ab_lease || exit 1
+	policy=$lease_policy
+else
+	policy=$(ab_selected_policy) || exit 1
+fi
+"$AB_LIB/restore" "$policy" || exit 1
+# Only runtime learning/latch state may be reset after verified shell recovery.
+# The persistent daily quota file and lock are deliberately preserved.
+rm -f "$AB_RUN/state.json"
+/etc/init.d/mwan3-autobalancer start || exit 1
+printf '{"mode":"observe","restored":true}\n'

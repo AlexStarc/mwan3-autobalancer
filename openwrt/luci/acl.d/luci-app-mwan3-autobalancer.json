@@ -1,0 +1,13 @@
+{
+  "luci-app-mwan3-autobalancer": {
+    "description": "Read mwan3 autobalancer status and configure bounded probes",
+    "read": {
+      "ubus": { "mwan3.autobalancer": [ "status" ] },
+      "uci": [ "mwan3", "mwan3_autobalancer" ]
+    },
+    "write": {
+      "ubus": { "mwan3.autobalancer": [ "probe", "rollback" ] },
+      "uci": [ "mwan3_autobalancer" ]
+    }
+  }
+}
