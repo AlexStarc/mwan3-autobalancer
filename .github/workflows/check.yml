@@ -68,6 +68,8 @@ jobs:
     needs: [go, openwrt-files]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Prepare SDK artifact directory
+        run: mkdir -p sdk-artifacts
       - name: Build actual OpenWrt packages
         uses: openwrt/gh-action-sdk@b8cc97d1072dedff455e2945a73fc43f5c7e1749 # v9
         env:
