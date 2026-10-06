@@ -219,7 +219,7 @@ func runnerProcessState(t *testing.T, pid int) string {
 		// BusyBox ps lacks -p and the stat= format. /proc also distinguishes dead
 		// zombies from running descendants without depending on a ps implementation.
 		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		if errors.Is(err, os.ErrNotExist) {
+		if runnerProcProcessGone(err) {
 			return ""
 		}
 		if err != nil {
@@ -244,6 +244,32 @@ func runnerProcessState(t *testing.T, pid int) string {
 		t.Fatal("could not inspect owned process", pid, err)
 	}
 	return strings.TrimSpace(string(state))
+}
+
+func runnerProcProcessGone(err error) bool {
+	// procfs can open stat successfully and then return ESRCH if the task exits
+	// before read. Both errors prove disappearance; permission/I/O errors do not.
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+func TestRunnerProcProcessGone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		gone bool
+	}{
+		{"missing-before-open", &os.PathError{Op: "open", Path: "/proc/123/stat", Err: syscall.ENOENT}, true},
+		{"exited-during-read", &os.PathError{Op: "read", Path: "/proc/123/stat", Err: syscall.ESRCH}, true},
+		{"permission-denied", &os.PathError{Op: "read", Path: "/proc/123/stat", Err: syscall.EACCES}, false},
+		{"io-error", &os.PathError{Op: "read", Path: "/proc/123/stat", Err: syscall.EIO}, false},
+		{"successful-read", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if gone := runnerProcProcessGone(tc.err); gone != tc.gone {
+				t.Fatalf("process gone = %v, want %v for %v", gone, tc.gone, tc.err)
+			}
+		})
+	}
 }
 
 func stockOfflineFixture(s Snapshot) string {
