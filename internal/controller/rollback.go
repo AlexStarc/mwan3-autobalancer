@@ -44,6 +44,7 @@ func (e *Engine) Rollback(ctx context.Context) (Report, error) {
 	if !identifier(policy) || len(policy) > 15 {
 		return e.Report(), errors.New("invalid selected policy")
 	}
+	selectedPolicy := policy
 	var lease Lease
 	if leaseErr := ReadJSON(filepath.Join(e.Adapter.Recovery.Dir, "lease.json"), &lease); leaseErr == nil {
 		if !identifier(lease.Policy) || len(lease.Policy) > 15 {
@@ -55,6 +56,19 @@ func (e *Engine) Rollback(ctx context.Context) (Report, error) {
 	}
 	if err = e.Adapter.Pause(ctx); err != nil {
 		return e.Report(), err
+	}
+	if policy != selectedPolicy {
+		cause := fmt.Errorf("leased policy %s differs from selected policy %s; select the leased policy before explicit restore verification", policy, selectedPolicy)
+		e.mu.Lock()
+		e.state.ApplyBlocked = cause.Error()
+		e.state.LastError = cause.Error()
+		e.mu.Unlock()
+		_ = e.save()
+		_ = e.Adapter.RequestLeasedRestore(context.WithoutCancel(ctx), policy, cause.Error())
+		report, _ := e.Status(ctx)
+		report.Mode = "observe"
+		report.LastError = cause.Error()
+		return report, cause
 	}
 	_, restoreErr := e.Adapter.Runner.Run(ctx, []string{"/usr/libexec/mwan3-autobalancer/restore", policy}, "")
 	if restoreErr == nil {
@@ -87,6 +101,9 @@ func (e *Engine) verifyExplicitRestore(ctx context.Context, policy string) error
 	s, err := e.Adapter.Discover(ctx)
 	if err != nil {
 		return err
+	}
+	if s.Config.Policy != policy {
+		return errors.New("restored leased policy differs from selected policy; restoration cannot be verified and latch remains blocked")
 	}
 	if s.Config.Mode != "observe" {
 		return errors.New("explicit restore requires current mode observe")

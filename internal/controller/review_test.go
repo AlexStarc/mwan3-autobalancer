@@ -102,7 +102,7 @@ func TestStockThreeDecimalRoundingAndOfflineOutput(t *testing.T) {
 		s.Channels[i].Online = false
 		s.Channels[i].Device = "eth" + strconv.Itoa(i)
 	}
-	leaf = ":mwan3_policy_balanced - [0:0]\n" + `-A mwan3_policy_balanced -o eth0 -m mark --mark 0x0/0x3f00 -m comment --comment "out a eth0" -j MARK --set-xmark 0x3f00/0x3f00` + "\n" + `-A mwan3_policy_balanced -m mark --mark 0x0/0x3f00 -j MARK --set-xmark 0x3e00/0x3f00` + "\n"
+	leaf = ":mwan3_policy_balanced - [0:0]\n" + `-A mwan3_policy_balanced -o eth0 -m mark --mark 0x0/0x3f00 -m comment --comment "out a eth0" -j MARK --set-xmark 0x3f00/0x3f00` + "\n" + `-A mwan3_policy_balanced -m mark --mark 0x0/0x3f00 -m comment --comment "unreachable" -j MARK --set-xmark 0x3e00/0x3f00` + "\n"
 	if !NativeBaseline(leaf, s) {
 		t.Fatal("native offline output rejected")
 	}

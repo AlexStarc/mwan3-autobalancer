@@ -286,6 +286,12 @@ func BuildRules(s Snapshot, w []int) (string, []string, error) {
 		remaining -= w[i]
 	}
 	if total == 0 {
+		for i := len(s.Channels) - 1; i >= 0; i-- {
+			c := s.Channels[i]
+			if !c.Online && c.Device != "" {
+				rules = append(rules, fmt.Sprintf("-A %s -o %s -m mark --mark 0x0/0x%x -m comment --comment \"out %s %s\" -j MARK --set-xmark 0x%x/0x%x", chain, c.Device, s.Mask, c.Interface, c.Device, s.Mask, s.Mask))
+			}
+		}
 		maxID := s.Mask >> s.Shift
 		id := maxID
 		switch s.LastResort {
@@ -294,7 +300,7 @@ func BuildRules(s Snapshot, w []int) (string, []string, error) {
 		case "unreachable":
 			id--
 		}
-		rules = append(rules, fmt.Sprintf("-A %s -m mark --mark 0x0/0x%x -j MARK --set-xmark 0x%x/0x%x", chain, s.Mask, id<<s.Shift, s.Mask))
+		rules = append(rules, fmt.Sprintf("-A %s -m mark --mark 0x0/0x%x -m comment --comment \"%s\" -j MARK --set-xmark 0x%x/0x%x", chain, s.Mask, s.LastResort, id<<s.Shift, s.Mask))
 	}
 	return "*mangle\n-F " + chain + "\n" + strings.Join(rules, "\n") + "\nCOMMIT\n", rules, nil
 }

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -59,13 +60,41 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	_, _ = b.b.Write(p)
 	return n, nil
 }
+
+// The supervisor keeps the group leader alive until Go has received the real command status.
+// Go kills the group before Wait reaps that leader, so cleanup cannot target a reused leader PID.
+// Commands and descendants inherit the group; deliberately detached groups are outside this ownership.
+const commandSupervisor = `set +m
+"$@" <&0 3>&- 4>&- &
+child=$!
+wait "$child"
+result=$?
+printf '%s\n' "$result" >&3
+IFS= read -r release <&4
+exit "$result"
+`
+
 func (ExecRunner) Run(ctx context.Context, args []string, input string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("empty command")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	statusR, statusW, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	defer statusR.Close()
+	defer statusW.Close()
+	holdR, holdW, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	defer holdR.Close()
+	defer holdW.Close()
+	launchArgs := append([]string{"-c", commandSupervisor, "mwan3-autobalancer-runner"}, args...)
+	cmd := exec.CommandContext(ctx, "/bin/sh", launchArgs...)
+	cmd.ExtraFiles = []*os.File{statusW, holdR}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -79,16 +108,40 @@ func (ExecRunner) Run(ctx context.Context, args []string, input string) (string,
 	errout := &cappedBuffer{max: 16 * 1024, cancel: cancel}
 	cmd.Stdout = out
 	cmd.Stderr = errout
-	err := cmd.Run()
+	if err = cmd.Start(); err != nil {
+		return "", &CommandError{args[0], -1, err, ""}
+	}
+	_ = statusW.Close()
+	_ = holdR.Close()
+	status, statusErr := bufio.NewReader(io.LimitReader(statusR, 8)).ReadString('\n')
+	// The supervisor is still waiting (or an unreaped zombie after cancellation) at this point.
+	// Cleanup is unconditional and occurs before Wait, including early-exiting wrappers with open or closed pipes.
+	killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	waitErr := cmd.Wait()
 	if out.overflow || errout.overflow {
 		return out.b.String(), errors.New("command output exceeded limit")
 	}
-	if err != nil {
-		code := -1
-		if cmd.ProcessState != nil {
-			code = cmd.ProcessState.ExitCode()
+	code := -1
+	if statusErr == nil {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(status))
+		if parseErr == nil && parsed >= 0 && parsed <= 255 {
+			code = parsed
+		} else {
+			statusErr = errors.New("invalid command status")
 		}
-		return out.b.String(), &CommandError{args[0], code, err, strings.TrimSpace(errout.b.String())}
+	}
+	cause := statusErr
+	if ctx.Err() != nil {
+		cause = ctx.Err()
+	} else if killErr != nil && killErr != syscall.ESRCH {
+		cause = fmt.Errorf("owned process group cleanup: %w", killErr)
+	} else if errors.Is(waitErr, exec.ErrWaitDelay) {
+		cause = waitErr
+	} else if code != 0 && cause == nil {
+		cause = fmt.Errorf("command exited with status %d", code)
+	}
+	if cause != nil {
+		return out.b.String(), &CommandError{args[0], code, cause, strings.TrimSpace(errout.b.String())}
 	}
 	return out.b.String(), nil
 }

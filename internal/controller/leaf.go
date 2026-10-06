@@ -25,6 +25,7 @@ type leafRule struct {
 	comment       bool
 	outDevice     string
 	out           bool
+	fallback      string
 }
 
 // Only this closed grammar is a native leaf: no jumps, extra matches, negations or foreign options.
@@ -116,6 +117,12 @@ func parseLeafRule(line, chain string, mask uint32) (leafRule, error) {
 					return r, errors.New("invalid native comment")
 				}
 				words := strings.Fields(tokens[i+3])
+				if len(words) == 1 && (words[0] == "default" || words[0] == "unreachable" || words[0] == "blackhole") {
+					r.comment = true
+					r.fallback = words[0]
+					i += 4
+					continue
+				}
 				if len(words) != 3 {
 					return r, errors.New("invalid native comment fields")
 				}
@@ -236,7 +243,7 @@ func NativeBaseline(save string, s Snapshot) bool {
 		case "unreachable":
 			maxID--
 		}
-		return !r.comment && !r.statistic && r.mark == maxID<<s.Shift
+		return r.comment && r.fallback == s.LastResort && !r.statistic && r.mark == maxID<<s.Shift
 	}
 	if len(core) != len(active) {
 		return false
