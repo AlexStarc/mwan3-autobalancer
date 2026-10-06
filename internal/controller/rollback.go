@@ -93,7 +93,7 @@ func (e *Engine) Rollback(ctx context.Context) (Report, error) {
 func (e *Engine) verifyExplicitRestore(ctx context.Context, policy string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	unlock, err := fileLock(ctx, e.Adapter.LockPath)
+	ctx, unlock, err := commandFileLock(ctx, e.Adapter.LockPath)
 	if err != nil {
 		return err
 	}

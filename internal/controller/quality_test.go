@@ -9,9 +9,180 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// Run the actual runner in a separate Go owner so SIGKILL also closes its pipes and lock.
+func TestRunnerOwnerDeathHelper(t *testing.T) {
+	dir := os.Getenv("AUTOBALANCER_OWNER_DEATH_FIXTURE")
+	if dir == "" {
+		return
+	}
+	ctx := context.Background()
+	if os.Getenv("AUTOBALANCER_OWNER_DEATH_LOCK") == "1" {
+		lockedCtx, unlock, err := commandFileLock(ctx, filepath.Join(dir, "stock.lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+		ctx = lockedCtx
+	}
+	_, err := (ExecRunner{}).Run(ctx, []string{os.Args[0], "-test.run=^TestRunnerActiveCommandHelper$"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerActiveCommandHelper(t *testing.T) {
+	dir := os.Getenv("AUTOBALANCER_OWNER_DEATH_FIXTURE")
+	if dir == "" {
+		return
+	}
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer child.Process.Kill()
+	group, err := syscall.Getpgid(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("AUTOBALANCER_OWNER_DEATH_LOCK") == "1" {
+		var stat syscall.Stat_t
+		if err := syscall.Fstat(5, &stat); err != nil {
+			t.Fatal("stock lock descriptor was not inherited", err)
+		}
+		var expected syscall.Stat_t
+		if err := syscall.Stat(filepath.Join(dir, "stock.lock"), &expected); err != nil || stat.Ino != expected.Ino || stat.Dev != expected.Dev {
+			t.Fatal("inherited descriptor does not refer to the stock lock", stat.Ino, expected.Ino, err)
+		}
+	}
+	for name, pid := range map[string]int{"command.pid": os.Getpid(), "child.pid": child.Process.Pid, "group.pid": group} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(strconv.Itoa(pid)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("late-apply"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+}
+
+func TestRunnerOwnerDeathStopsActiveCommandsBeforeRecovery(t *testing.T) {
+	for _, locked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(locked), func(t *testing.T) {
+			dir := t.TempDir()
+			owner := exec.Command(os.Args[0], "-test.run=^TestRunnerOwnerDeathHelper$")
+			owner.Env = append(os.Environ(), "AUTOBALANCER_OWNER_DEATH_FIXTURE="+dir)
+			if locked {
+				owner.Env = append(owner.Env, "AUTOBALANCER_OWNER_DEATH_LOCK=1")
+			}
+			if err := owner.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer owner.Process.Kill()
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("owner command never started")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			groupData, err := os.ReadFile(filepath.Join(dir, "group.pid"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			group, err := strconv.Atoi(strings.TrimSpace(string(groupData)))
+			if err != nil || group <= 1 {
+				t.Fatal(string(groupData), err)
+			}
+			defer syscall.Kill(-group, syscall.SIGKILL)
+			if locked {
+				// Keep a member parented by this test outside the group. Otherwise POSIX
+				// orphan-group SIGHUP/SIGCONT would resume the stopped monitor on owner death.
+				guard := exec.Command("sleep", "30")
+				guard.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: group}
+				if err := guard.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = guard.Process.Kill(); _ = guard.Wait() }()
+				probeCtx, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				prematureUnlock, probeErr := fileLock(probeCtx, filepath.Join(dir, "stock.lock"))
+				stop()
+				if probeErr == nil {
+					prematureUnlock()
+					t.Fatal("stock lock not held even before owner death")
+				}
+				// Delay the EOF monitor deliberately: recovery must remain locked out even
+				// when owner death releases Go's descriptor before group cleanup executes.
+				if err = syscall.Kill(-group, syscall.SIGSTOP); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if err := owner.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			_ = owner.Wait()
+			if locked {
+				blockedCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				unlock, err := fileLock(blockedCtx, filepath.Join(dir, "stock.lock"))
+				cancel()
+				if err == nil {
+					unlock()
+					t.Fatal("recovery acquired stock lock before old command group exited", "owner", owner.Process.Pid, "group", group, "group exists", syscall.Kill(-group, 0))
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal(err)
+				}
+				if err = syscall.Kill(-group, syscall.SIGCONT); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Simulate the independent stock helper taking the same flock and restoring.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			unlock, err := fileLock(ctx, filepath.Join(dir, "stock.lock"))
+			if err != nil {
+				t.Fatal("recovery could not acquire released stock lock", err)
+			}
+			defer unlock()
+			for _, name := range []string{"command.pid", "child.pid"} {
+				data, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+				if err != nil || pid <= 1 {
+					t.Fatal(string(data), err)
+				}
+				defer syscall.Kill(pid, syscall.SIGKILL)
+				state, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+				stat := strings.TrimSpace(string(state))
+				if stat != "" && !strings.HasPrefix(stat, "Z") {
+					t.Errorf("active command survived owner death/recovery lock: %s %d %s", name, pid, stat)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("stock-restored"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(1200 * time.Millisecond)
+			data, err := os.ReadFile(filepath.Join(dir, "policy"))
+			if err != nil || string(data) != "stock-restored" {
+				t.Fatal("late apply overwrote independent restoration", string(data), err)
+			}
+		})
+	}
+}
 
 func stockOfflineFixture(s Snapshot) string {
 	chain := "mwan3_policy_" + s.Config.Policy

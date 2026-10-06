@@ -61,16 +61,23 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// The supervisor keeps the group leader alive until Go has received the real command status.
-// Go kills the group before Wait reaps that leader, so cleanup cannot target a reused leader PID.
+// The monitor observes owner-pipe EOF concurrently with the command, including Go SIGKILL.
+// The supervisor keeps the group leader alive until Go receives the command status and kills
+// the group before Wait reaps that leader; neither cleanup path can target a reused leader PID.
 // Commands and descendants inherit the group; deliberately detached groups are outside this ownership.
 const commandSupervisor = `set +m
+leader=$$
+(
+  IFS= read -r release <&4
+  kill -KILL -- "-$leader"
+) </dev/null >/dev/null 2>&1 3>&- &
+monitor=$!
 "$@" <&0 3>&- 4>&- &
 child=$!
 wait "$child"
 result=$?
 printf '%s\n' "$result" >&3
-IFS= read -r release <&4
+wait "$monitor"
 exit "$result"
 `
 
@@ -95,6 +102,11 @@ func (ExecRunner) Run(ctx context.Context, args []string, input string) (string,
 	launchArgs := append([]string{"-c", commandSupervisor, "mwan3-autobalancer-runner"}, args...)
 	cmd := exec.CommandContext(ctx, "/bin/sh", launchArgs...)
 	cmd.ExtraFiles = []*os.File{statusW, holdR}
+	if lock, _ := ctx.Value(commandLockKey{}).(*os.File); lock != nil {
+		// Inherit the same flock open-file-description, not an independently opened file.
+		// Owner death cannot release recovery's lock while an old command can still mutate.
+		cmd.ExtraFiles = append(cmd.ExtraFiles, lock)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -198,28 +210,50 @@ func ReadJSON(path string, v any) error {
 	}
 	return nil
 }
+
+type commandLockKey struct{}
+
+// Only commands inside this lock scope inherit its descriptor. Independent restoration
+// uses a fresh context after unlock, and must never inherit the old stock lock.
+func commandFileLock(ctx context.Context, path string) (context.Context, func(), error) {
+	f, unlock, err := acquireFileLock(ctx, path)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, commandLockKey{}, f), unlock, nil
+}
+
+func withoutCommandLock(ctx context.Context) context.Context {
+	return context.WithValue(ctx, commandLockKey{}, (*os.File)(nil))
+}
+
 func fileLock(ctx context.Context, path string) (func(), error) {
+	_, unlock, err := acquireFileLock(ctx, path)
+	return unlock, err
+}
+
+func acquireFileLock(ctx context.Context, path string) (*os.File, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			var once sync.Once
-			return func() { once.Do(func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }) }, nil
+			return f, func() { once.Do(func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }) }, nil
 		}
 		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		select {
 		case <-ctx.Done():
 			f.Close()
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

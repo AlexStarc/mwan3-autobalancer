@@ -313,7 +313,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	if err := a.Recovery.Ready(); err != nil {
 		return err
 	}
-	unlock, err := fileLock(ctx, a.LockPath)
+	ctx, unlock, err := commandFileLock(ctx, a.LockPath)
 	if err != nil {
 		return err
 	}
@@ -335,7 +335,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	chain := "mwan3_policy_" + s.Config.Policy
 	if !a.AllowedLeaf(before, fresh) {
 		unlock()
-		pauseErr := a.Pause(context.WithoutCancel(ctx))
+		pauseErr := a.Pause(withoutCommandLock(context.WithoutCancel(ctx)))
 		return fmt.Errorf("policy leaf conflict: neither current stock baseline nor owned chain; automatic mode paused: %v", pauseErr)
 	}
 	restore, rules, err := BuildRules(s, w)
@@ -354,7 +354,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	}
 	if !a.AllowedLeaf(currentSnapshot.LiveSave, currentSnapshot) {
 		unlock()
-		pauseErr := a.Pause(context.WithoutCancel(ctx))
+		pauseErr := a.Pause(withoutCommandLock(context.WithoutCancel(ctx)))
 		return fmt.Errorf("policy leaf conflict during validation; automatic mode paused: %v", pauseErr)
 	}
 	oldLines, _ := chainLines(before, chain)
