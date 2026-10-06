@@ -71,6 +71,16 @@ func (e *Engine) Daemon(ctx context.Context) error {
 				switch req.Command {
 				case "status":
 					_ = json.NewEncoder(c).Encode(e.Report())
+				case "rollback":
+					_ = c.SetDeadline(time.Now().Add(40 * time.Second))
+					restoreCtx, cancel := context.WithTimeout(ownedCtx, 35*time.Second)
+					defer cancel()
+					report, err := e.Rollback(restoreCtx)
+					if err != nil {
+						report.LastError = err.Error()
+						report.Phase = "error"
+					}
+					_ = json.NewEncoder(c).Encode(report)
 				case "probe":
 					if e.Report().Busy || !queued.CompareAndSwap(false, true) {
 						_ = json.NewEncoder(c).Encode(ControlReply{Error: "probe cycle already queued or active"})
@@ -106,6 +116,9 @@ func Control(ctx context.Context, socket, command string, out any) error {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if command == "rollback" {
+		_ = conn.SetDeadline(time.Now().Add(40 * time.Second))
+	}
 	if err = json.NewEncoder(conn).Encode(ControlRequest{command}); err != nil {
 		return err
 	}

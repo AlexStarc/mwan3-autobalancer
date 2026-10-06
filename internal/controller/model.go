@@ -31,6 +31,8 @@ type Channel struct {
 	CalibrationDeadline         *time.Time `json:"calibration_deadline,omitempty"`
 	CalibrationAttempts         int        `json:"calibration_attempts"`
 	EffectiveCalibrationSeconds int64      `json:"effective_calibration_seconds"`
+	Phase                       string     `json:"phase"`
+	NextProbeAt                 *time.Time `json:"next_probe_at"`
 	Metric                      int        `json:"metric"`
 	ID                          int        `json:"id"`
 	SourceIP                    string     `json:"source_ip"`

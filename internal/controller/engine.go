@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,20 +32,23 @@ type State struct {
 	AppliedGeneration string              `json:"applied_generation"`
 	Generation        string              `json:"generation"`
 	LastError         string              `json:"last_error"`
+	ApplyBlocked      string              `json:"apply_blocked,omitempty"`
 }
 type Report struct {
-	Policy                 string    `json:"policy"`
-	Mode                   string    `json:"mode"`
-	ScheduleMode           string    `json:"schedule_mode"`
-	Compatible             bool      `json:"compatible"`
-	CompatibilityError     string    `json:"compatibility_error"`
-	Busy                   bool      `json:"busy"`
-	LastError              string    `json:"last_error"`
-	LeaseActive            bool      `json:"lease_active"`
-	ApplyReady             bool      `json:"apply_ready"`
-	ApplyUnavailableReason string    `json:"apply_unavailable_reason"`
-	Channels               []Channel `json:"channels"`
-	Generation             string    `json:"generation"`
+	Policy                 string     `json:"policy"`
+	Mode                   string     `json:"mode"`
+	ScheduleMode           string     `json:"schedule_mode"`
+	Compatible             bool       `json:"compatible"`
+	CompatibilityError     string     `json:"compatibility_error"`
+	Busy                   bool       `json:"busy"`
+	LastError              string     `json:"last_error"`
+	LeaseActive            bool       `json:"lease_active"`
+	ApplyReady             bool       `json:"apply_ready"`
+	ApplyUnavailableReason string     `json:"apply_unavailable_reason"`
+	Channels               []Channel  `json:"channels"`
+	Generation             string     `json:"generation"`
+	Phase                  string     `json:"phase"`
+	NextProbeAt            *time.Time `json:"next_probe_at"`
 }
 type Engine struct {
 	Adapter   *Adapter
@@ -59,6 +63,9 @@ type Engine struct {
 
 func NewEngine(a *Adapter, b Budgets, statePath string) *Engine {
 	e := &Engine{Adapter: a, Budgets: b, StatePath: statePath, Now: time.Now}
+	if a.Recovery.HeartbeatStopped == nil {
+		a.Recovery.HeartbeatStopped = new(atomic.Bool)
+	}
 	_ = ReadJSON(statePath, &e.state)
 	e.init()
 	return e
@@ -79,13 +86,16 @@ func (e *Engine) init() {
 }
 func channelEpoch(s Snapshot, c Channel) string {
 	b, _ := json.Marshal(struct {
-		Config                            Config
-		Member, Interface, Device, Source string
-		Metric, Weight                    int
-		Online                            bool
-		Mask                              uint32
-		ID                                int
-	}{s.Config, c.Member, c.Interface, c.Device, c.SourceIP, c.Metric, c.BaselineWeight, c.Online, s.Mask, c.ID})
+		Policy, URL                             string
+		ProbeBytes, MaxProbeBytes, MinimumBytes int64
+		Timeout                                 time.Duration
+		MinimumSeconds, Alpha                   float64
+		Member, Interface, Device, Source       string
+		Metric, Weight                          int
+		Online                                  bool
+		Mask                                    uint32
+		ID                                      int
+	}{s.Config.Policy, s.Config.URL, s.Config.For(c.Interface).Bytes, s.Config.MaxProbeBytes, s.Config.MinimumBytes, s.Config.Timeout, s.Config.MinimumSeconds, s.Config.Alpha, c.Member, c.Interface, c.Device, c.SourceIP, c.Metric, c.BaselineWeight, c.Online, s.Mask, c.ID})
 	return string(b)
 }
 func CalibrationWindow(s Snapshot) time.Duration {
@@ -95,9 +105,9 @@ func CalibrationWindow(s Snapshot) time.Duration {
 			online++
 		}
 	}
-	window := time.Duration(2*online)*s.Config.Timeout + 4*time.Minute
-	if window < 10*time.Minute {
-		return 10 * time.Minute
+	window := time.Duration(2*online)*s.Config.Timeout + s.Config.CalibrationInterval + s.Config.Settle + time.Minute
+	if window < s.Config.CalibrationMinimumWindow {
+		return s.Config.CalibrationMinimumWindow
 	}
 	return window
 }
@@ -107,6 +117,9 @@ func (e *Engine) refresh(ctx context.Context) (Snapshot, error) {
 		e.mu.Lock()
 		e.state.LastError = err.Error()
 		e.report.LastError = err.Error()
+		e.report.Phase = "error"
+		e.report.ApplyReady = false
+		e.report.ApplyUnavailableReason = "fresh discovery failed"
 		e.mu.Unlock()
 		return s, err
 	}
@@ -119,7 +132,7 @@ func (e *Engine) refresh(ctx context.Context) (Snapshot, error) {
 		if sc.Epoch != epoch {
 			delete(e.state.Samples, c.Interface)
 			window := CalibrationWindow(s)
-			sc = Schedule{Epoch: epoch, SettleUntil: now.Add(time.Minute), CalibrationUntil: now.Add(window), Next: now.Add(time.Minute), WindowSeconds: int64(window / time.Second)}
+			sc = Schedule{Epoch: epoch, SettleUntil: now.Add(s.Config.Settle), CalibrationUntil: now.Add(window), Next: now.Add(s.Config.Settle), WindowSeconds: int64(window / time.Second)}
 			e.state.ProbeStates[c.Interface] = "settling"
 			e.state.ProbeErrors[c.Interface] = ""
 		}
@@ -142,8 +155,24 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 	} else if readyErr != nil {
 		r.ApplyUnavailableReason = readyErr.Error()
 	}
+	if e.state.ApplyBlocked != "" {
+		r.ApplyReady = false
+		r.ApplyUnavailableReason = e.state.ApplyBlocked
+	}
 	var lease Lease
 	r.LeaseActive = ReadJSON(filepath.Join(e.Adapter.Recovery.Dir, "lease.json"), &lease) == nil
+	if r.LeaseActive && lease.RestoreRequested {
+		r.ApplyReady = false
+		r.ApplyUnavailableReason = "independent recovery is requested"
+	}
+	if r.LeaseActive && lease.Policy != s.Config.Policy {
+		r.ApplyReady = false
+		r.ApplyUnavailableReason = "restore the previously leased policy before switching"
+	}
+	if e.Adapter.Recovery.HeartbeatStopped.Load() {
+		r.ApplyReady = false
+		r.ApplyUnavailableReason = "restart controller after independent recovery failure"
+	}
 	for i := range r.Channels {
 		c := &r.Channels[i]
 		if len(w) > i {
@@ -183,6 +212,53 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 			c.BudgetUsedBytes = 0
 		}
 		c.BudgetLimitBytes = s.Config.For(c.Interface).DailyBudget
+		c.Phase = "holding"
+		if !s.Config.Enabled || s.Config.URL == "" {
+			c.Phase = "disabled"
+		} else if !c.Online {
+			c.Phase = "holding"
+		} else if c.ProbeError != "" {
+			c.Phase = "error"
+		} else if !schedule.Complete && schedule.Attempts < 5 && !now.After(schedule.CalibrationUntil) {
+			c.Phase = "calibrating"
+		} else if s.Config.ScheduleMode == "hybrid" {
+			c.Phase = "maintenance"
+		}
+		if s.Config.Enabled && s.Config.URL != "" && c.Online && s.Config.ScheduleMode == "hybrid" {
+			next := schedule.Next
+			if !schedule.Complete && (schedule.Attempts >= 5 || now.After(schedule.CalibrationUntil)) {
+				next = now.Add(s.Config.For(c.Interface).Interval)
+			}
+			if !next.After(now) {
+				next = now.Add(20 * time.Second)
+			}
+			next = next.UTC()
+			c.NextProbeAt = &next
+			if r.NextProbeAt == nil || next.Before(*r.NextProbeAt) {
+				rootNext := next
+				r.NextProbeAt = &rootNext
+			}
+		}
+	}
+	r.Phase = "holding"
+	if !s.Config.Enabled || s.Config.URL == "" {
+		r.Phase = "disabled"
+	} else {
+		channelError := false
+		for _, c := range r.Channels {
+			if c.Phase == "error" {
+				channelError = true
+			}
+			if c.Phase == "maintenance" && r.Phase == "holding" {
+				r.Phase = "maintenance"
+			}
+			if c.Phase == "calibrating" {
+				r.Phase = "calibrating"
+			}
+		}
+		if e.state.LastError != "" || e.state.ApplyBlocked != "" || channelError {
+			r.Phase = "error"
+		}
 	}
 	e.report = r
 }
@@ -253,7 +329,7 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		e.mu.Lock()
 		sc = e.state.Schedule[c.Interface]
 		sc.Attempts++
-		sc.Next = e.Now().Add(2 * time.Minute)
+		sc.Next = e.Now().Add(s.Config.CalibrationInterval)
 		if probeErr != nil {
 			e.state.ProbeErrors[c.Interface] = probeErr.Error()
 			e.state.ProbeStates[c.Interface] = "failed"
@@ -316,6 +392,10 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 		return nil
 	}
 	e.mu.Lock()
+	if !explicit && e.state.ApplyBlocked != "" {
+		e.mu.Unlock()
+		return nil
+	}
 	now := e.Now()
 	weights, err := Weights(s.Channels, e.state.Samples, now, s.Config.MaxAge)
 	old := append([]int(nil), e.state.Weights...)
@@ -350,7 +430,39 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 		return err
 	}
 	got, exists := chainLines(actual, "mwan3_policy_"+s.Config.Policy)
+	if !exists || !e.Adapter.AllowedLeaf(actual, s) {
+		pauseErr := e.Adapter.Pause(context.WithoutCancel(ctx))
+		err := fmt.Errorf("policy leaf conflict; automatic mode paused: %v", pauseErr)
+		e.mu.Lock()
+		e.state.ApplyBlocked = err.Error()
+		e.state.LastError = err.Error()
+		s.Config.Mode = "observe"
+		e.makeReport(s, now)
+		e.mu.Unlock()
+		_ = e.save()
+		return err
+	}
 	leafChanged := !exists || !equivalentRules(got, expected)
+	_, proposedRules, buildErr := BuildRules(s, weights)
+	if buildErr != nil {
+		return buildErr
+	}
+	if equivalentRules(got, proposedRules) {
+		if explicit {
+			if err := e.Adapter.Recovery.Ready(); err != nil {
+				return err
+			}
+		}
+		e.mu.Lock()
+		e.state.Weights = weights
+		e.state.AppliedGeneration = s.Generation
+		if explicit {
+			e.state.ApplyBlocked = ""
+			e.state.LastError = ""
+		}
+		e.mu.Unlock()
+		return e.save()
+	}
 	if reflect.DeepEqual(old, weights) && !changed && !leafChanged {
 		return nil
 	}
@@ -360,20 +472,26 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 	if !last.IsZero() && now.Sub(last) < s.Config.MinimumApply {
 		return nil
 	}
-	if err = e.Adapter.Apply(ctx, s, weights); err != nil {
+	if err = e.Adapter.Apply(ctx, s, weights, explicit); err != nil {
 		e.mu.Lock()
 		e.state.LastError = err.Error()
+		e.state.ApplyBlocked = err.Error()
+		e.makeReport(s, now)
 		e.mu.Unlock()
 		return err
 	}
 	e.mu.Lock()
 	e.state.Weights = weights
+	e.state.ApplyBlocked = ""
 	e.state.LastApply = now
 	e.state.AppliedGeneration = s.Generation
 	s.Applied = append([]int(nil), weights...)
 	e.makeReport(s, now)
 	e.mu.Unlock()
-	return e.save()
+	if err = e.save(); err != nil {
+		return e.Adapter.RecoverFailedApply(s.Config.Policy, fmt.Errorf("post-apply state persistence failed: %w", err))
+	}
+	return nil
 }
 func (e *Engine) Tick(ctx context.Context) error {
 	s, err := e.refresh(ctx)

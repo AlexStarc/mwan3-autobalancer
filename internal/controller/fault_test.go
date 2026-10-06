@@ -88,7 +88,7 @@ func TestUnsupportedLegacyAndFailedTransaction(t *testing.T) {
 	if err != nil || s.Compatible {
 		t.Fatal(s, err)
 	}
-	if err = x.adapter.Apply(ctx, s, []int{500, 500}); err == nil || x.runner.count("iptables-restore") != 0 {
+	if err = x.adapter.Apply(ctx, s, []int{500, 500}, true); err == nil || x.runner.count("iptables-restore") != 0 {
 		t.Fatal(err)
 	}
 	x.runner.fn = base
@@ -103,7 +103,7 @@ func TestUnsupportedLegacyAndFailedTransaction(t *testing.T) {
 		}
 		return base(a, in)
 	}
-	if err = x.adapter.Apply(ctx, s, []int{500, 500}); err == nil || x.save != before {
+	if err = x.adapter.Apply(ctx, s, []int{500, 500}, true); err == nil || x.save != before {
 		t.Fatal("test failure changed leaf", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestVerificationFailureInvokesIndependentRestore(t *testing.T) {
 		}
 		return out, err
 	}
-	if err = x.adapter.Apply(ctx, s, []int{500, 500}); err == nil {
+	if err = x.adapter.Apply(ctx, s, []int{500, 500}, true); err == nil {
 		t.Fatal("verification mismatch accepted")
 	}
 	if x.runner.count("/usr/libexec/mwan3-autobalancer/restore") != 1 {

@@ -84,7 +84,7 @@ func TestStatusReflectsCurrentChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = x.adapter.Apply(ctx, s, []int{600, 400}); err != nil {
+	if err = x.adapter.Apply(ctx, s, []int{600, 400}, true); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.Status(ctx)

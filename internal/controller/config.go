@@ -63,18 +63,22 @@ type Config struct {
 	URL          string
 	ScheduleMode string
 	ProbeConfig
-	Timeout        time.Duration
-	MinimumSeconds float64
-	MinimumBytes   int64
-	Alpha          float64
-	MaxAge         time.Duration
-	Hysteresis     float64
-	MinimumApply   time.Duration
-	WAN            map[string]ProbeConfig
+	Timeout                  time.Duration
+	MinimumSeconds           float64
+	MinimumBytes             int64
+	Alpha                    float64
+	MaxAge                   time.Duration
+	Hysteresis               float64
+	MinimumApply             time.Duration
+	CalibrationInterval      time.Duration
+	CalibrationMinimumWindow time.Duration
+	Settle                   time.Duration
+	MaxProbeBytes            int64
+	WAN                      map[string]ProbeConfig
 }
 
 func DefaultConfig() Config {
-	return Config{Mode: "observe", Policy: "balanced", ScheduleMode: "hybrid", ProbeConfig: ProbeConfig{6 * time.Hour, 33554432, 268435456}, Timeout: 15 * time.Second, MinimumSeconds: 2, MinimumBytes: 262144, Alpha: .25, MaxAge: 24 * time.Hour, Hysteresis: 5, MinimumApply: time.Minute, WAN: map[string]ProbeConfig{}}
+	return Config{Mode: "observe", Policy: "balanced", ScheduleMode: "hybrid", ProbeConfig: ProbeConfig{6 * time.Hour, 33554432, 268435456}, Timeout: 15 * time.Second, MinimumSeconds: 2, MinimumBytes: 262144, Alpha: .25, MaxAge: 24 * time.Hour, Hysteresis: 5, MinimumApply: time.Minute, CalibrationInterval: 120 * time.Second, CalibrationMinimumWindow: 600 * time.Second, Settle: 60 * time.Second, MaxProbeBytes: 134217728, WAN: map[string]ProbeConfig{}}
 }
 func ParseConfig(u UCI) (Config, error) {
 	c := DefaultConfig()
@@ -179,6 +183,28 @@ func ParseConfig(u UCI) (Config, error) {
 		return c, err
 	}
 	c.MinimumApply = time.Duration(n) * time.Second
+	n, err = integer(main, "calibration_interval_seconds", 120, 20, 3600)
+	if err != nil {
+		return c, err
+	}
+	c.CalibrationInterval = time.Duration(n) * time.Second
+	n, err = integer(main, "calibration_window_seconds", 600, 60, 86400)
+	if err != nil {
+		return c, err
+	}
+	c.CalibrationMinimumWindow = time.Duration(n) * time.Second
+	n, err = integer(main, "settle_seconds", 60, 0, 3600)
+	if err != nil {
+		return c, err
+	}
+	c.Settle = time.Duration(n) * time.Second
+	c.MaxProbeBytes, err = integer(main, "max_probe_bytes", 134217728, c.Bytes, 1073741824)
+	if err != nil {
+		return c, err
+	}
+	if c.Bytes > c.MaxProbeBytes {
+		return c, errors.New("probe_bytes exceeds max_probe_bytes")
+	}
 	for _, s := range u.Values {
 		if s.Text(".type") != "wan" {
 			continue
@@ -197,6 +223,9 @@ func ParseConfig(u UCI) (Config, error) {
 		if p.Bytes < c.MinimumBytes {
 			return c, errors.New("WAN probe smaller than minimum_bytes")
 		}
+		if p.Bytes > c.MaxProbeBytes {
+			return c, errors.New("WAN probe_bytes exceeds max_probe_bytes")
+		}
 		c.WAN[iface] = p
 	}
 	return c, nil
@@ -214,6 +243,9 @@ func ValidateURL(s string) error {
 	u, err := url.Parse(s)
 	if err != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" || strings.ContainsAny(s, "\r\n\x00") {
 		return errors.New("probe_url must be an HTTP(S) URL without credentials or fragment")
+	}
+	if strings.Contains(u.Host, "{bytes}") {
+		return errors.New("{bytes} is allowed only in the URL path or query")
 	}
 	return nil
 }

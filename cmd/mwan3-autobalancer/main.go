@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/a-starch/mwan3-autobalancer/internal/controller"
+	"github.com/AlexStarc/mwan3-autobalancer/internal/controller"
 )
 
 func main() {
@@ -80,6 +80,16 @@ func run(ctx context.Context, args []string) error {
 	case "rollback":
 		if len(args) != 1 {
 			return fmt.Errorf("rollback takes no arguments")
+		}
+		var activeReport controller.Report
+		if err := controller.Control(ctx, socket, "rollback", &activeReport); err == nil && activeReport.Policy != "" && activeReport.Mode == "observe" {
+			if outErr := emit(activeReport); outErr != nil {
+				return outErr
+			}
+			if activeReport.LastError != "" {
+				return fmt.Errorf("%s", activeReport.LastError)
+			}
+			return nil
 		}
 		report, err := engine.Rollback(ctx)
 		if outErr := emit(report); outErr != nil {

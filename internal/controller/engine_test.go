@@ -148,7 +148,7 @@ func TestEngineHysteresisAndHotplug(t *testing.T) {
 	if x.runner.count("iptables-restore") != count {
 		t.Fatal("hysteresis bypass")
 	}
-	x.save = "*mangle\n:mwan3_policy_balanced - [0:0]\n:mwan3_policy_other - [0:0]\n-A mwan3_policy_other -j RETURN\n-A mwan3_policy_balanced -j RETURN\nCOMMIT\n"
+	x.save = fixtureStockLeaf()
 	if err = e.Reconcile(ctx, s, false); err != nil {
 		t.Fatal(err)
 	}

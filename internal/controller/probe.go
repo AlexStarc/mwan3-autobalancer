@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -34,7 +35,39 @@ func ParseCurl(out string) (CurlStats, error) {
 	}
 	return s, nil
 }
+
+type ShortTransferError struct{ Bytes, Duration float64 }
+
+func (e *ShortTransferError) Error() string {
+	return "insufficient confidence: transfer too short; use a larger object or {bytes} URL template"
+}
+func ExpandProbeURL(raw string, payload int64) string {
+	return strings.ReplaceAll(raw, "{bytes}", strconv.FormatInt(payload, 10))
+}
 func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time) (float64, error) {
+	p := s.Config.For(c.Interface)
+	speed, err := a.probeAttempt(ctx, s, c, b, now, p.Bytes, ExpandProbeURL(s.Config.URL, p.Bytes))
+	var short *ShortTransferError
+	if !errors.As(err, &short) || ctx.Err() != nil || p.Bytes >= s.Config.MaxProbeBytes {
+		return speed, err
+	}
+	retry := p.Bytes * 2
+	if short.Duration > 0 {
+		needed := int64(math.Ceil(short.Bytes * s.Config.MinimumSeconds / short.Duration * 1.1))
+		if needed > retry {
+			retry = needed
+		}
+	}
+	if retry > s.Config.MaxProbeBytes {
+		retry = s.Config.MaxProbeBytes
+	}
+	if retry <= p.Bytes {
+		return speed, err
+	}
+	// Exactly one larger request; its full payload is durably reserved independently before network.
+	return a.probeAttempt(ctx, s, c, b, now, retry, ExpandProbeURL(s.Config.URL, retry))
+}
+func (a *Adapter) probeAttempt(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time, payload int64, probeURL string) (float64, error) {
 	if !c.Online {
 		return 0, errors.New("WAN is offline; no probe")
 	}
@@ -44,16 +77,17 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 	if s.Config.URL == "" {
 		return 0, errors.New("set probe_url to an HTTP(S) test object to enable measurement")
 	}
-	if err := ValidateURL(s.Config.URL); err != nil {
+	if err := ValidateURL(probeURL); err != nil {
 		return 0, err
 	}
 	p := s.Config.For(c.Interface)
+	p.Bytes = payload
 	version, err := a.Runner.Run(ctx, []string{"curl", "--version"}, "")
 	if err != nil || !StreamingCapableCurl(version) {
 		return 0, errors.New("safe probing requires curl >= 8.4 with streaming max-filesize enforcement")
 	}
 	// Resolve explicitly for both stock routing preflight and curl, preventing DNS rebind between checks.
-	u, _ := url.Parse(s.Config.URL)
+	u, _ := url.Parse(probeURL)
 	host := u.Hostname()
 	port := u.Port()
 	if port == "" {
@@ -100,7 +134,7 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 	probeCtx, cancel := context.WithTimeout(ctx, s.Config.Timeout+2*time.Second)
 	defer cancel()
 	statsFormat := `{"http_code":%{http_code},"size_download":%{size_download},"time_total":%{time_total},"time_starttransfer":%{time_starttransfer},"local_ip":"%{local_ip}","remote_ip":"%{remote_ip}","speed_download":%{speed_download}}` + "\n"
-	args := []string{"mwan3", "use", c.Interface, "curl", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", strconv.FormatFloat(s.Config.Timeout.Seconds(), 'f', 0, 64), "--max-filesize", strconv.FormatInt(p.Bytes, 10), "--range", "0-" + strconv.FormatInt(p.Bytes-1, 10), "--proto", "=http,https", "--proto-redir", "=http,https", "--resolve", host + ":" + port + ":" + remote.String(), "--output", "/dev/null", "--write-out", statsFormat, "--url", s.Config.URL}
+	args := []string{"mwan3", "use", c.Interface, "curl", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", strconv.FormatFloat(s.Config.Timeout.Seconds(), 'f', 0, 64), "--max-filesize", strconv.FormatInt(p.Bytes, 10), "--range", "0-" + strconv.FormatInt(p.Bytes-1, 10), "--proto", "=http,https", "--proto-redir", "=http,https", "--resolve", host + ":" + port + ":" + remote.String(), "--output", "/dev/null", "--write-out", statsFormat, "--url", probeURL}
 	out, runErr := a.Runner.Run(probeCtx, args, "")
 	stats, err := ParseCurl(out)
 	if err != nil {
@@ -117,8 +151,8 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 		return 0, fmt.Errorf("probe HTTP status %d", stats.Code)
 	}
 	duration := stats.Total - stats.Start
-	if stats.Bytes > float64(p.Bytes) || stats.Bytes < float64(s.Config.MinimumBytes) || duration < s.Config.MinimumSeconds || duration <= 0 {
-		return 0, errors.New("insufficient confidence: transfer too short or outside payload limits")
+	if stats.Bytes > float64(p.Bytes) || stats.Bytes < float64(s.Config.MinimumBytes) || duration <= 0 {
+		return 0, errors.New("insufficient confidence: payload outside limits or no transfer duration")
 	}
 	if stats.LocalIP != c.SourceIP || stats.RemoteIP != remote.String() {
 		return 0, errors.New("probe source or destination changed")
@@ -126,6 +160,9 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 	fresh, err := a.Discover(ctx)
 	if err != nil || fresh.Generation != s.Generation {
 		return 0, errors.New("probe discarded: topology/source generation changed")
+	}
+	if duration < s.Config.MinimumSeconds {
+		return 0, &ShortTransferError{stats.Bytes, duration}
 	}
 	speed := stats.Bytes * 8 / duration / 1000000
 	if speed <= 0 {

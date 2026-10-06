@@ -10,7 +10,7 @@ import (
 	"math"
 	"math/bits"
 	"net"
-	"regexp"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +27,7 @@ type Snapshot struct {
 	Compatible         bool
 	CompatibilityError string
 	Applied            []int
+	LiveSave           string
 }
 type Adapter struct {
 	Runner   Runner
@@ -203,12 +204,11 @@ func (a *Adapter) Discover(ctx context.Context) (Snapshot, error) {
 	s.Generation = hex.EncodeToString(hash.Sum(nil))
 	save, readErr := a.Runner.Run(ctx, []string{"iptables-save", "-t", "mangle"}, "")
 	if readErr == nil {
+		s.LiveSave = save
 		s.Applied = CurrentWeights(save, s)
 	}
 	return s, nil
 }
-
-var nativeComment = regexp.MustCompile(`--comment "([A-Za-z0-9_-]+) ([0-9]+) ([0-9]+)"`)
 
 // Decode the same cumulative probabilities as the native mwan3 leaf; unknown rules remain unclaimed.
 func CurrentWeights(save string, s Snapshot) []int {
@@ -216,18 +216,16 @@ func CurrentWeights(save string, s Snapshot) []int {
 	lines, _ := chainLines(save, "mwan3_policy_"+s.Config.Policy)
 	remaining := 1.0
 	for _, line := range lines {
-		m := nativeComment.FindStringSubmatch(line)
-		if len(m) != 4 {
-			continue
+		r, err := parseLeafRule(line, "mwan3_policy_"+s.Config.Policy, s.Mask)
+		if err != nil {
+			return make([]int, len(s.Channels))
 		}
-		weight, _ := strconv.Atoi(m[2])
-		total, _ := strconv.Atoi(m[3])
-		if weight < 1 || total < weight {
+		if !r.comment || r.out {
 			continue
 		}
 		for i, c := range s.Channels {
-			if c.Interface == m[1] && strings.Contains(line, fmt.Sprintf("--set-xmark 0x%x/0x%x", uint32(c.ID)<<s.Shift, s.Mask)) {
-				share := remaining * float64(weight) / float64(total)
+			if c.Interface == r.iface && r.mark == uint32(c.ID)<<s.Shift {
+				share := remaining * r.probability
 				out[i] = int(math.Round(share * 1000))
 				remaining -= share
 			}
@@ -300,7 +298,7 @@ func BuildRules(s Snapshot, w []int) (string, []string, error) {
 	}
 	return "*mangle\n-F " + chain + "\n" + strings.Join(rules, "\n") + "\nCOMMIT\n", rules, nil
 }
-func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int) error {
+func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if !s.Compatible {
@@ -329,8 +327,10 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int) error {
 		return err
 	}
 	chain := "mwan3_policy_" + s.Config.Policy
-	if _, ok := chainLines(before, chain); !ok {
-		return errors.New("selected policy leaf does not exist")
+	if !a.AllowedLeaf(before, fresh) {
+		unlock()
+		pauseErr := a.Pause(context.WithoutCancel(ctx))
+		return fmt.Errorf("policy leaf conflict: neither current stock baseline nor owned chain; automatic mode paused: %v", pauseErr)
 	}
 	restore, rules, err := BuildRules(s, w)
 	if err != nil {
@@ -339,21 +339,58 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int) error {
 	if _, err = a.Runner.Run(ctx, []string{"iptables-restore", "--test", "--noflush"}, restore); err != nil {
 		return err
 	}
-	if err = a.Recovery.Arm(s.Config.Policy); err != nil {
-		return err
-	}
-	if _, err = a.Runner.Run(ctx, []string{"iptables-restore", "--noflush"}, restore); err != nil {
-		return fmt.Errorf("transaction failed; watchdog lease armed: %w", err)
-	}
-	after, err := a.Runner.Run(ctx, []string{"iptables-save", "-t", "mangle"}, "")
+	currentSnapshot, err := a.Discover(ctx)
 	if err != nil {
 		return err
 	}
-	got, _ := chainLines(after, chain)
-	if !equivalentRules(got, rules) || otherRules(before, chain) != otherRules(after, chain) {
-		unlock() // The independent helper acquires the same stock lock itself.
-		_, restoreErr := a.Runner.Run(ctx, []string{"/usr/libexec/mwan3-autobalancer/restore", s.Config.Policy}, "")
-		return fmt.Errorf("policy verification failed; independent restore: %v", restoreErr)
+	if currentSnapshot.Generation != s.Generation || !currentSnapshot.Compatible {
+		return errors.New("generation changed during transaction validation")
+	}
+	if !a.AllowedLeaf(currentSnapshot.LiveSave, currentSnapshot) {
+		unlock()
+		pauseErr := a.Pause(context.WithoutCancel(ctx))
+		return fmt.Errorf("policy leaf conflict during validation; automatic mode paused: %v", pauseErr)
+	}
+	oldLines, _ := chainLines(before, chain)
+	currentLines, _ := chainLines(currentSnapshot.LiveSave, chain)
+	if ruleHash(oldLines) != ruleHash(currentLines) {
+		return errors.New("policy leaf changed during transaction validation")
+	}
+	before = currentSnapshot.LiveSave
+	currentUCI, err := a.uci(ctx, "mwan3_autobalancer")
+	if err != nil {
+		return err
+	}
+	current, err := ParseConfig(currentUCI)
+	if err != nil {
+		return err
+	}
+	manual := len(explicit) > 0 && explicit[0]
+	if !reflect.DeepEqual(current, s.Config) || (!manual && (!current.Enabled || current.Mode != "automatic")) {
+		return errors.New("current apply opt-in/config changed; no transaction")
+	}
+	if err = a.Recovery.Arm(s.Config.Policy, ruleHash(rules)); err != nil {
+		return err
+	}
+	// Every failure after this point may have committed and must actively recover independently.
+	if _, err = a.Runner.Run(ctx, []string{"iptables-restore", "--noflush"}, restore); err != nil {
+		unlock()
+		return a.RecoverFailedApply(s.Config.Policy, fmt.Errorf("possibly committed transaction failed: %w", err))
+	}
+	after, err := a.Runner.Run(ctx, []string{"iptables-save", "-t", "mangle"}, "")
+	if err != nil {
+		unlock()
+		return a.RecoverFailedApply(s.Config.Policy, fmt.Errorf("post-commit inspection failed: %w", err))
+	}
+	got, _ := chainLines(after, "mwan3_policy_"+s.Config.Policy)
+	if !equivalentRules(got, rules) || otherRules(before, "mwan3_policy_"+s.Config.Policy) != otherRules(after, "mwan3_policy_"+s.Config.Policy) {
+		unlock()
+		return a.RecoverFailedApply(s.Config.Policy, errors.New("post-commit policy verification failed"))
+	}
+	// Store the inspected kernel representation, including probability quantization, for conflict checks.
+	if err = a.Recovery.RecordChain(ruleHash(got)); err != nil {
+		unlock()
+		return a.RecoverFailedApply(s.Config.Policy, fmt.Errorf("verified chain ownership could not be recorded: %w", err))
 	}
 	return nil
 }
@@ -361,8 +398,10 @@ func equivalentRules(a, b []string) bool {
 	normalize := func(x []string) string {
 		r := []string{}
 		for _, line := range x {
-			line = strings.ReplaceAll(line, "\"", "")
-			tokens := strings.Fields(line)
+			tokens, err := leafTokens(line)
+			if err != nil {
+				return "invalid leaf tokens"
+			}
 			for i := 0; i+1 < len(tokens); i++ {
 				if tokens[i] == "--probability" {
 					f, err := strconv.ParseFloat(tokens[i+1], 64)
@@ -371,7 +410,7 @@ func equivalentRules(a, b []string) bool {
 					}
 				}
 			}
-			r = append(r, strings.Join(tokens, " "))
+			r = append(r, strings.Join(tokens, "\x00"))
 		}
 		return strings.Join(r, "\n")
 	}

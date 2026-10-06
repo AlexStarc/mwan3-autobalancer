@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -233,11 +234,12 @@ type WatchdogReady struct {
 	Uptime float64 `json:"uptime"`
 }
 type Recovery struct {
-	Dir      string
-	Now      func() (float64, error)
-	ReadProc func(int) ([]byte, error)
-	PID      int
-	Session  string
+	Dir              string
+	Now              func() (float64, error)
+	ReadProc         func(int) ([]byte, error)
+	PID              int
+	Session          string
+	HeartbeatStopped *atomic.Bool
 }
 
 func (r Recovery) Ready() error {
@@ -274,11 +276,14 @@ type Heartbeat struct {
 	Uptime  float64 `json:"uptime"`
 }
 type Lease struct {
-	Policy        string  `json:"policy"`
-	Uptime        float64 `json:"uptime"`
-	PID           int     `json:"pid"`
-	Session       string  `json:"session"`
-	HeartbeatFile string  `json:"heartbeat_file"`
+	Policy           string  `json:"policy"`
+	Uptime           float64 `json:"uptime"`
+	PID              int     `json:"pid"`
+	Session          string  `json:"session"`
+	HeartbeatFile    string  `json:"heartbeat_file"`
+	ChainHash        string  `json:"chain_hash,omitempty"`
+	RestoreRequested bool    `json:"restore_requested"`
+	RestoreReason    string  `json:"restore_reason,omitempty"`
 }
 
 func NewRecovery(dir string) Recovery {
@@ -286,10 +291,13 @@ func NewRecovery(dir string) Recovery {
 	if _, err := rand.Read(nonce); err != nil {
 		panic(err)
 	}
-	return Recovery{Dir: dir, PID: os.Getpid(), Session: hex.EncodeToString(nonce), Now: Uptime, ReadProc: func(pid int) ([]byte, error) { return os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)) }}
+	return Recovery{Dir: dir, PID: os.Getpid(), Session: hex.EncodeToString(nonce), HeartbeatStopped: new(atomic.Bool), Now: Uptime, ReadProc: func(pid int) ([]byte, error) { return os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)) }}
 }
 func (r Recovery) HeartbeatName() string { return fmt.Sprintf("heartbeat.%d.json", r.PID) }
 func (r Recovery) Heartbeat() error {
+	if r.HeartbeatStopped != nil && r.HeartbeatStopped.Load() {
+		return errors.New("owner heartbeat stopped for independent recovery")
+	}
 	if r.PID < 2 || len(r.Session) != 32 {
 		return errors.New("missing recovery owner identity")
 	}
@@ -299,12 +307,18 @@ func (r Recovery) Heartbeat() error {
 	}
 	return AtomicJSON(filepath.Join(r.Dir, r.HeartbeatName()), Heartbeat{r.PID, r.Session, up})
 }
-func (r Recovery) Arm(policy string) error {
+func (r Recovery) Arm(policy string, chainHash ...string) error {
+	if r.HeartbeatStopped != nil && r.HeartbeatStopped.Load() {
+		return errors.New("owner must restart after failed independent recovery")
+	}
 	if err := r.Ready(); err != nil {
 		return err
 	}
 	var previous Lease
 	if err := ReadJSON(filepath.Join(r.Dir, "lease.json"), &previous); err == nil {
+		if previous.RestoreRequested {
+			return errors.New("independent restore requested; recovery must complete before applying")
+		}
 		if previous.Policy != policy {
 			return errors.New("active lease belongs to another policy; restore the previous policy before switching")
 		}
@@ -318,5 +332,40 @@ func (r Recovery) Arm(policy string) error {
 	if err != nil {
 		return err
 	}
-	return AtomicJSON(filepath.Join(r.Dir, "lease.json"), Lease{policy, up, r.PID, r.Session, r.HeartbeatName()})
+	lease := Lease{Policy: policy, Uptime: up, PID: r.PID, Session: r.Session, HeartbeatFile: r.HeartbeatName()}
+	if len(chainHash) > 0 {
+		lease.ChainHash = chainHash[0]
+	}
+	return AtomicJSON(filepath.Join(r.Dir, "lease.json"), lease)
+}
+func (r Recovery) RequestRestore(reason string) error {
+	var lease Lease
+	path := filepath.Join(r.Dir, "lease.json")
+	if err := ReadJSON(path, &lease); err != nil {
+		return err
+	}
+	if lease.PID != r.PID || lease.Session != r.Session {
+		return errors.New("cannot request restoration for another lease owner")
+	}
+	lease.RestoreRequested = true
+	lease.RestoreReason = reason
+	return AtomicJSON(path, lease)
+}
+func (r Recovery) RecordChain(hash string) error {
+	var lease Lease
+	path := filepath.Join(r.Dir, "lease.json")
+	if err := ReadJSON(path, &lease); err != nil {
+		return err
+	}
+	if lease.PID != r.PID || lease.Session != r.Session {
+		return errors.New("recovery lease owner changed")
+	}
+	lease.ChainHash = hash
+	return AtomicJSON(path, lease)
+}
+func (r Recovery) StopHeartbeat() {
+	if r.HeartbeatStopped != nil {
+		r.HeartbeatStopped.Store(true)
+	}
+	_ = os.Remove(filepath.Join(r.Dir, r.HeartbeatName()))
 }

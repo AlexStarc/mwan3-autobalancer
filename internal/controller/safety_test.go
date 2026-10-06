@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -56,7 +57,7 @@ func makeFixture(t *testing.T) *fixture {
 	x := &fixture{dir: t.TempDir(), now: time.Unix(10000, 0), up: 100, raw: "synthetic mwan3 configuration"}
 	x.cfg = UCI{Values: map[string]Section{"main": {".type": "main", "enabled": "1", "mode": "observe", "policy": "balanced", "probe_url": "https://192.0.2.99/object"}}}
 	x.uci = UCI{Values: map[string]Section{"globals": {".type": "globals", "mmx_mask": "0x3f00"}, "balanced": {".type": "policy", "use_member": []any{"a_member", "b_member"}, "last_resort": "default"}, "wan": {".type": "interface", ".index": float64(1), "enabled": "0"}, "a": {".type": "interface", ".index": float64(2), "enabled": "1", "family": "ipv4"}, "b": {".type": "interface", ".index": float64(48), "enabled": "1", "family": "ipv4"}, "a_member": {".type": "member", "interface": "a", "metric": "1", "weight": "1"}, "b_member": {".type": "member", "interface": "b", "metric": "1", "weight": "1"}}}
-	x.save = "*mangle\n:mwan3_policy_balanced - [0:0]\n:mwan3_policy_other - [0:0]\n-A mwan3_policy_other -j RETURN\n-A mwan3_policy_balanced -j RETURN\nCOMMIT\n"
+	x.save = fixtureStockLeaf()
 	x.curl = `mwan3 diagnostic line` + "\n" + `{"http_code":206,"size_download":1048576,"time_total":3,"time_starttransfer":1,"local_ip":"192.0.2.1","remote_ip":"192.0.2.99"}`
 	x.runner = &fakeRunner{}
 	x.runner.fn = func(a []string, in string) (string, error) {
@@ -98,6 +99,11 @@ func makeFixture(t *testing.T) *fixture {
 			}
 			x.save = strings.Join(out, "\n")
 			return "", nil
+		case "uci":
+			if a[1] == "set" && a[2] == "mwan3_autobalancer.main.mode=observe" {
+				x.cfg.Values["main"]["mode"] = "observe"
+			}
+			return "", nil
 		case "curl":
 			return "curl 8.19.0 (aarch64-openwrt-linux)", nil
 		case "ip":
@@ -105,11 +111,13 @@ func makeFixture(t *testing.T) *fixture {
 		case "mwan3":
 			return x.curl, x.curlErr
 		case "/usr/libexec/mwan3-autobalancer/restore":
+			x.save = fixtureStockLeaf()
+			_ = os.Remove(filepath.Join(x.dir, "lease.json"))
 			return "", nil
 		}
 		return "", fmt.Errorf("unexpected command %v", a)
 	}
-	recovery := Recovery{Dir: x.dir, Now: func() (float64, error) { return x.up, nil }, ReadProc: func(int) ([]byte, error) {
+	recovery := Recovery{Dir: x.dir, HeartbeatStopped: new(atomic.Bool), Now: func() (float64, error) { return x.up, nil }, ReadProc: func(int) ([]byte, error) {
 		return []byte("/bin/sh\x00/usr/libexec/mwan3-autobalancer/watchdog\x00"), nil
 	}, PID: 1234, Session: strings.Repeat("a", 32)}
 	x.adapter = &Adapter{Runner: x.runner, LockPath: filepath.Join(x.dir, "mwan3.lock"), Recovery: recovery, ReadFile: func(p string) ([]byte, error) {
@@ -165,7 +173,7 @@ func TestApplyGatesAndLeafTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := x.save
-	if err = x.adapter.Apply(ctx, s, []int{600, 400}); err == nil {
+	if err = x.adapter.Apply(ctx, s, []int{600, 400}, true); err == nil {
 		t.Fatal("absent watchdog accepted")
 	}
 	if x.save != before || x.runner.count("iptables-restore") != 0 {
@@ -173,7 +181,7 @@ func TestApplyGatesAndLeafTransaction(t *testing.T) {
 	}
 	x.ready(t)
 	x.raw = "changed topology"
-	if err = x.adapter.Apply(ctx, s, []int{600, 400}); err == nil {
+	if err = x.adapter.Apply(ctx, s, []int{600, 400}, true); err == nil {
 		t.Fatal("stale generation accepted")
 	}
 	if x.save != before {
@@ -183,7 +191,7 @@ func TestApplyGatesAndLeafTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = x.adapter.Apply(ctx, s, []int{600, 400}); err != nil {
+	if err = x.adapter.Apply(ctx, s, []int{600, 400}, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(x.save, `"a 600 1000"`) || !strings.Contains(x.save, `"b 400 400"`) || !strings.Contains(x.save, "-A mwan3_policy_other -j RETURN") {
@@ -199,7 +207,7 @@ func TestApplyGatesAndLeafTransaction(t *testing.T) {
 	}
 	s.Compatible = false
 	s.CompatibilityError = "unsupported"
-	if err = x.adapter.Apply(ctx, s, []int{600, 400}); err == nil {
+	if err = x.adapter.Apply(ctx, s, []int{600, 400}, true); err == nil {
 		t.Fatal("unsupported accepted")
 	}
 }
@@ -305,4 +313,8 @@ func TestConfigValidationAndCurl(t *testing.T) {
 	if _, err := ParseConfig(x.cfg); err == nil {
 		t.Fatal("mode silently enabled")
 	}
+}
+
+func fixtureStockLeaf() string {
+	return "*mangle\n:mwan3_policy_balanced - [0:0]\n:mwan3_policy_other - [0:0]\n-A mwan3_policy_other -j RETURN\n" + `-A mwan3_policy_balanced -m mark --mark 0x0/0x3f00 -m statistic --mode random --probability 0.50000000000 -m comment --comment "b 1 2" -j MARK --set-xmark 0x300/0x3f00` + "\n" + `-A mwan3_policy_balanced -m mark --mark 0x0/0x3f00 -m comment --comment "a 1 1" -j MARK --set-xmark 0x200/0x3f00` + "\nCOMMIT\n"
 }
