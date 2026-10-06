@@ -81,11 +81,10 @@ func run(ctx context.Context, args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("rollback takes no arguments")
 		}
-		snapshot, err := adapter.Discover(ctx)
-		if err != nil {
-			return err
+		report, err := engine.Rollback(ctx)
+		if outErr := emit(report); outErr != nil {
+			return outErr
 		}
-		_, err = runner.Run(ctx, []string{"/usr/libexec/mwan3-autobalancer/restore", snapshot.Config.Policy}, "")
 		return err
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

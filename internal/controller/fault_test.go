@@ -172,3 +172,43 @@ func TestLeasePolicyCannotBeOrphaned(t *testing.T) {
 		t.Fatal("previous policy lease orphaned")
 	}
 }
+
+func TestExplicitRollbackPausesOwnModeBeforeRestore(t *testing.T) {
+	x := makeFixture(t)
+	x.cfg.Values["main"]["mode"] = "automatic"
+	e := makeEngine(t, x)
+	base := x.runner.fn
+	paused := false
+	committed := false
+	x.runner.fn = func(a []string, in string) (string, error) {
+		if a[0] == "uci" {
+			if a[1] == "set" {
+				if a[2] != "mwan3_autobalancer.main.mode=observe" {
+					t.Fatal(a)
+				}
+				paused = true
+				x.cfg.Values["main"]["mode"] = "observe"
+			}
+			if a[1] == "commit" {
+				if a[2] != "mwan3_autobalancer" {
+					t.Fatal(a)
+				}
+				committed = true
+			}
+			return "", nil
+		}
+		if a[0] == "/usr/libexec/mwan3-autobalancer/restore" {
+			if !paused || !committed || len(a) != 2 {
+				t.Fatal("restore preceded persistent pause", a)
+			}
+		}
+		return base(a, in)
+	}
+	r, err := e.Rollback(context.Background())
+	if err != nil || r.Mode != "observe" || !committed {
+		t.Fatal(r, err)
+	}
+	if x.runner.count("iptables-restore") != 0 {
+		t.Fatal("Go implemented rollback instead of stock helper")
+	}
+}
