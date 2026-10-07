@@ -133,17 +133,23 @@ func (a *Adapter) probeAttempt(ctx context.Context, s Snapshot, c Channel, b Bud
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, s.Config.Timeout+2*time.Second)
 	defer cancel()
-	statsFormat := `{"http_code":%{http_code},"size_download":%{size_download},"time_total":%{time_total},"time_starttransfer":%{time_starttransfer},"local_ip":"%{local_ip}","remote_ip":"%{remote_ip}","speed_download":%{speed_download}}` + "\n"
+	// Native JSON encodes a missing HTTP response as 0, not the raw invalid
+	// JSON number 000, and escapes all string fields. The curl >= 8.4 gate
+	// already exceeds the version that introduced this write-out format.
+	statsFormat := "%{json}\n"
 	args := []string{"mwan3", "use", c.Interface, "curl", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", strconv.FormatFloat(s.Config.Timeout.Seconds(), 'f', 0, 64), "--max-filesize", strconv.FormatInt(p.Bytes, 10), "--range", "0-" + strconv.FormatInt(p.Bytes-1, 10), "--proto", "=http,https", "--proto-redir", "=http,https", "--resolve", host + ":" + port + ":" + remote.String(), "--output", "/dev/null", "--write-out", statsFormat, "--url", probeURL}
 	out, runErr := a.Runner.Run(probeCtx, args, "")
 	stats, err := ParseCurl(out)
 	if err != nil {
+		if runErr != nil {
+			return 0, errors.Join(fmt.Errorf("probe transfer failed: %w", runErr), err)
+		}
 		return 0, err
 	}
 	if runErr != nil {
 		var commandErr *CommandError
 		// A duration-capped HTTP transfer is a valid rate sample only after body data actually flowed.
-		if !errors.As(runErr, &commandErr) || commandErr.Code != 28 || stats.Total < s.Config.Timeout.Seconds()-.5 {
+		if !errors.As(runErr, &commandErr) || commandErr.Code != 28 || stats.Total < s.Config.Timeout.Seconds()-.5 || (stats.Code != 200 && stats.Code != 206) || stats.Bytes <= 0 {
 			return 0, fmt.Errorf("probe transfer failed: %w", runErr)
 		}
 	}
