@@ -6,7 +6,7 @@ AB_SOURCE_DIR:=$(realpath $(AB_PACKAGE_DIR)/../..)
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3-autobalancer
-PKG_VERSION:=0.1.3
+PKG_VERSION:=0.1.4
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE

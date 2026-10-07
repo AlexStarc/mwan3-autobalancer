@@ -32,6 +32,7 @@ The tested integration target is OpenWrt 24.10.8, mwan3 2.11.16 and the IPv4 ipt
 
 - Discover any supported number of WAN members from a selected mwan3 policy.
 - Measure per-WAN throughput with explicit time, payload and persistent budget limits.
+- Preserve curl transport errors when a measurement fails, including transfers without an HTTP response.
 - Smooth valid measurements and calculate proportional weights, retaining configured priorities and safe behavior when measurements are missing or stale.
 - Update only the selected runtime policy without restarting mwan3 or flushing conntrack.
 - Provide one LuCI page for WAN status, measured speeds, proposed/applied shares, probe budgets and essential settings.
@@ -57,7 +58,7 @@ The module supports Go 1.23 and later. CI checks the SDK's Go 1.23.12 baseline a
 
 Automatic applying fails closed when the independent recovery watchdog is unavailable. The controller does not flash firmware, change bootloader/LAN/Wi-Fi settings, or persist measured weights to the base mwan3 configuration. Controlled device tests verified refusal without watchdog readiness and restoration after a controller crash; this is not a guarantee against arbitrary defects in a root process.
 
-If configuration or WAN generation changes before an update is armed, the controller leaves the rules unchanged and tries again on the next normal cycle using a fresh snapshot. Policy conflicts, unavailable recovery and uncertain writes remain blocked until verified recovery; a safe refusal does not permanently disable automatic updates. Controller 0.1.2-r1 also retires the two legacy generation-change blockers while preserving measurements, schedules, budgets and settings. The LuCI package remains 0.1.1-r1.
+If configuration or WAN generation changes before an update is armed, the controller leaves the rules unchanged and tries again on the next normal cycle using a fresh snapshot. Policy conflicts, unavailable recovery and uncertain writes remain blocked until verified recovery; a safe refusal does not permanently disable automatic updates. Controller 0.1.2-r1 also retires the two legacy generation-change blockers while preserving measurements, schedules, budgets and settings. Controller 0.1.3-r1 retries verified watchdog unavailability before arming an update, and LuCI 0.1.3-r1 clears stale mode validation when readiness returns. Controller 0.1.4-r1 fixes curl failure diagnostics; the unchanged LuCI package remains 0.1.3-r1.
 
 ## Reference project
 

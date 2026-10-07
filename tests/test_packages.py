@@ -44,7 +44,7 @@ fixture:
                 self.assertIn('SOURCE=' + str(ROOT), result.stdout)
                 self.assertNotIn(str(sdk / 'openwrt'), result.stdout)
                 if name == 'mwan3-autobalancer':
-                    self.assertIn('VERSION=0.1.3-r1', result.stdout)
+                    self.assertIn('VERSION=0.1.4-r1', result.stdout)
                     self.assertIn('CGO_ENABLED=0', result.stdout)
                     self.assertNotIn('CGO_ENABLED=1', result.stdout)
                     self.assertIn('-linkmode internal', result.stdout)
