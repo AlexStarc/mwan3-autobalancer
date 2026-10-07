@@ -5,6 +5,6 @@
 
 ## 2. Verification and release
 - [x] 2.1 Run Go tests, race detection, vet, OpenWrt/UI/package fixtures, strict OpenSpec validation, and independent review.
-- [ ] 2.2 Build the SDK package from the exact reviewed head and verify its contents and digest.
-- [ ] 2.3 Stage rollback and provide commands before router tests; upgrade and inspect a regular quota-accounted probe and unchanged routing/settings.
-- [ ] 2.4 Publish and verify the GitHub change and release, recording device evidence.
+- [x] 2.2 Build the SDK package from the exact reviewed head and verify its contents and digest.
+- [x] 2.3 Stage rollback and provide commands before router tests; upgrade and inspect a regular quota-accounted probe and unchanged routing/settings.
+- [x] 2.4 Publish and verify the GitHub change and release, recording device evidence.
