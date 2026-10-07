@@ -1,0 +1,35 @@
+#!/bin/sh
+. /usr/libexec/mwan3-autobalancer/common.sh
+owned() {
+	ab_pid "$1" && [ -r "/proc/$1/cmdline" ] || return 1
+	tr '\000' '\n' < "/proc/$1/cmdline" | awk -v command="$2" '$0==command { found=1 } END { exit !found }'
+}
+data=$("$AB_LIB/bounded" 3 ubus call service list '{"name":"mwan3-autobalancer"}') || exit 1
+json_load "$data" || exit 1
+controller=$(printf '%s' "$data" | jsonfilter -e '@["mwan3-autobalancer"].instances.controller.pid')
+watchdog=$(printf '%s' "$data" | jsonfilter -e '@["mwan3-autobalancer"].instances.watchdog.pid')
+# Delete only the named instances; procd removes their respawn configurations before TERM.
+if [ -n "$(printf '%s' "$data" | jsonfilter -e '@["mwan3-autobalancer"].instances.watchdog')" ]; then
+	"$AB_LIB/bounded" 3 ubus call service delete '{"name":"mwan3-autobalancer","instance":"watchdog"}' > /dev/null || exit 1
+fi
+if [ -n "$(printf '%s' "$data" | jsonfilter -e '@["mwan3-autobalancer"].instances.controller')" ]; then
+	"$AB_LIB/bounded" 3 ubus call service delete '{"name":"mwan3-autobalancer","instance":"controller"}' > /dev/null || exit 1
+fi
+attempt=0
+while owned "$controller" /usr/bin/mwan3-autobalancer || owned "$watchdog" /usr/libexec/mwan3-autobalancer/watchdog; do
+	attempt=$((attempt+1))
+	if [ "$attempt" -ge 6 ]; then
+		owned "$controller" /usr/bin/mwan3-autobalancer && kill -KILL "$controller" 2>/dev/null
+		owned "$watchdog" /usr/libexec/mwan3-autobalancer/watchdog && kill -KILL "$watchdog" 2>/dev/null
+		break
+	fi
+	sleep 1
+done
+if ab_json_file "$AB_RUN/watchdog.ready"; then
+	json_get_var ready_pid pid
+	# Do not erase a newer independent watcher's readiness record.
+	[ "$ready_pid" != "$watchdog" ] || rm -f "$AB_RUN/watchdog.ready"
+fi
+owned "$controller" /usr/bin/mwan3-autobalancer && exit 1
+owned "$watchdog" /usr/libexec/mwan3-autobalancer/watchdog && exit 1
+exit 0

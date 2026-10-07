@@ -1,0 +1,30 @@
+#!/bin/sh
+# Fixed executables, bounded xtables lock waits, and a failure sentinel are necessary:
+# mwan3_create_policies_iptables logs restore failures but may still return success.
+kind=$1; shift
+[ -n "$AB_RESTORE_DIR" ] && [ -d "$AB_RESTORE_DIR" ] || exit 1
+case "$kind" in
+	ipt4) iptables -t mangle -w 2 "$@"; result=$?;;
+	ipt6) ip6tables -t mangle -w 2 "$@"; result=$?;;
+	restore4|restore6)
+		input="$AB_RESTORE_DIR/input.$kind"
+		cat > "$input" || { : > "$AB_RESTORE_DIR/failed"; exit 1; }
+		# Closed selected-leaf grammar, before any mutation. Each update is verified again
+		# by replay/readback after all stock operations have completed.
+		awk -v chain="mwan3_policy_$AB_RESTORE_POLICY" -v updates=1 -f /usr/libexec/mwan3-autobalancer/leaf.awk "$input" > /dev/null || {
+			: > "$AB_RESTORE_DIR/failed"; exit 1;
+		}
+		case "$kind" in
+			restore4) binary=iptables-restore; family=4;;
+			restore6) binary=ip6tables-restore; family=6;;
+		esac
+		"$binary" -T mangle -w 2 -n --test < "$input" && "$binary" -T mangle -w 2 -n < "$input"
+		result=$?
+		if [ "$result" -eq 0 ]; then
+			cat "$input" >> "$AB_RESTORE_DIR/expected$family" || result=1
+		fi
+		;;
+	*) exit 2;;
+esac
+[ "$result" -eq 0 ] || : > "$AB_RESTORE_DIR/failed"
+exit "$result"

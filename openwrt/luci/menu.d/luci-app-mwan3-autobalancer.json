@@ -1,0 +1,8 @@
+{
+  "admin/network/mwan3-autobalancer": {
+    "title": "Автобалансировка",
+    "order": 65,
+    "action": { "type": "view", "path": "network/mwan3-autobalancer" },
+    "depends": { "acl": [ "luci-app-mwan3-autobalancer" ] }
+  }
+}
