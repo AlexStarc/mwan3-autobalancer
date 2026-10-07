@@ -129,6 +129,7 @@ func (e *Engine) verifyExplicitRestore(ctx context.Context, policy string) error
 	}
 	e.mu.Lock()
 	e.state.ApplyBlocked = ""
+	e.state.ApplyDeferred = ""
 	e.state.LastError = ""
 	e.state.Weights = nil
 	e.state.AppliedGeneration = ""

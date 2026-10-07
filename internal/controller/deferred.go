@@ -1,5 +1,10 @@
 package controller
 
+import (
+	"errors"
+	"time"
+)
+
 // DeferredApplyError is a verified refusal before arming the recovery lease or
 // writing rules. It may be retried only by a later cycle with a fresh snapshot.
 type DeferredApplyError struct {
@@ -24,4 +29,19 @@ func (e *Engine) clearDeferredDiagnostic() {
 		e.state.LastError = ""
 	}
 	e.state.ApplyDeferred = ""
+}
+
+func (e *Engine) recordApplyError(s Snapshot, now time.Time, err error) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var deferred *DeferredApplyError
+	if errors.As(err, &deferred) {
+		e.state.ApplyDeferred = err.Error()
+	} else {
+		e.state.ApplyDeferred = ""
+		e.state.ApplyBlocked = err.Error()
+	}
+	e.state.LastError = err.Error()
+	e.makeReport(s, now)
+	return err
 }

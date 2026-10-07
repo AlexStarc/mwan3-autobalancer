@@ -447,14 +447,8 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 	}
 	got, exists := chainLines(actual, "mwan3_policy_"+s.Config.Policy)
 	if !exists || !e.Adapter.AllowedLeaf(actual, s) {
-		pauseErr := e.Adapter.Pause(context.WithoutCancel(ctx))
-		err := fmt.Errorf("policy leaf conflict; automatic mode paused: %v", pauseErr)
-		e.mu.Lock()
-		e.state.ApplyBlocked = err.Error()
-		e.state.LastError = err.Error()
-		s.Config.Mode = "observe"
-		e.makeReport(s, now)
-		e.mu.Unlock()
+		fresh, conflictErr := e.Adapter.revalidateLeafConflict(ctx, s)
+		err := e.recordApplyError(fresh, now, conflictErr)
 		_ = e.save()
 		return err
 	}
@@ -492,18 +486,7 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 		return nil
 	}
 	if err = e.Adapter.Apply(ctx, s, weights, explicit); err != nil {
-		e.mu.Lock()
-		var deferred *DeferredApplyError
-		if errors.As(err, &deferred) {
-			e.state.ApplyDeferred = err.Error()
-		} else {
-			e.state.ApplyDeferred = ""
-			e.state.ApplyBlocked = err.Error()
-		}
-		e.state.LastError = err.Error()
-		e.makeReport(s, now)
-		e.mu.Unlock()
-		return err
+		return e.recordApplyError(s, now, err)
 	}
 	e.mu.Lock()
 	e.state.Weights = weights

@@ -304,6 +304,38 @@ func BuildRules(s Snapshot, w []int) (string, []string, error) {
 	}
 	return "*mangle\n-F " + chain + "\n" + strings.Join(rules, "\n") + "\nCOMMIT\n", rules, nil
 }
+
+// An unrecognized leaf may belong to a newer stock hotplug generation. Inspect
+// its current snapshot and rules under the shared lock before declaring a conflict.
+func (a *Adapter) revalidateLeafConflict(ctx context.Context, s Snapshot) (Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ctx, unlock, err := commandFileLock(ctx, a.LockPath)
+	if err != nil {
+		return s, err
+	}
+	defer unlock()
+	fresh, err := a.Discover(ctx)
+	if err != nil {
+		return s, fmt.Errorf("policy leaf revalidation failed: %w", err)
+	}
+	if !fresh.Compatible {
+		return fresh, errors.New(fresh.CompatibilityError)
+	}
+	if fresh.LiveSave == "" {
+		return fresh, errors.New("current policy leaf could not be inspected during revalidation")
+	}
+	if fresh.Generation != s.Generation {
+		return fresh, &DeferredApplyError{Reason: "generation changed before policy leaf conflict revalidation"}
+	}
+	if a.AllowedLeaf(fresh.LiveSave, fresh) {
+		return fresh, &DeferredApplyError{Reason: "policy leaf became stock or owned during revalidation; awaiting fresh cycle"}
+	}
+	pauseErr := a.Pause(context.WithoutCancel(ctx))
+	fresh.Config.Mode = "observe"
+	return fresh, fmt.Errorf("policy leaf conflict; automatic mode paused: %v", pauseErr)
+}
+
 func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
