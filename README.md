@@ -2,6 +2,26 @@
 
 An adaptive N-WAN policy controller for OpenWrt/mwan3, with a minimal authenticated LuCI interface.
 
+## Screenshots
+
+Actual LuCI captures from router validation. The displayed speeds and shares are example measurements. English and Russian follow the normal LuCI language preference.
+
+![English LuCI interface showing WAN speeds, proposed and applied shares, budgets and settings](docs/screenshots/luci-en.jpg)
+
+<details>
+<summary>Russian interface</summary>
+
+![Russian LuCI interface](docs/screenshots/luci-ru.jpg)
+
+</details>
+
+<details>
+<summary>Mobile interface</summary>
+
+<img src="docs/screenshots/luci-en-mobile.jpg" alt="English LuCI interface with responsive WAN cards at a 390-pixel viewport" width="360">
+
+</details>
+
 ## Project status
 
 The controller and LuCI interface are implemented. Router validation has covered bounded measurements, controlled runtime changes, independent crash recovery and startup failure. See the [device validation report](docs/DEVICE-VALIDATION.ru.md) for evidence and limits. This is an experimental controller; installation starts in observation mode. No source code from KIT BusRouter has been copied into this repository.
