@@ -304,6 +304,38 @@ func BuildRules(s Snapshot, w []int) (string, []string, error) {
 	}
 	return "*mangle\n-F " + chain + "\n" + strings.Join(rules, "\n") + "\nCOMMIT\n", rules, nil
 }
+
+// An unrecognized leaf may belong to a newer stock hotplug generation. Inspect
+// its current snapshot and rules under the shared lock before declaring a conflict.
+func (a *Adapter) revalidateLeafConflict(ctx context.Context, s Snapshot) (Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ctx, unlock, err := commandFileLock(ctx, a.LockPath)
+	if err != nil {
+		return s, err
+	}
+	defer unlock()
+	fresh, err := a.Discover(ctx)
+	if err != nil {
+		return s, fmt.Errorf("policy leaf revalidation failed: %w", err)
+	}
+	if !fresh.Compatible {
+		return fresh, errors.New(fresh.CompatibilityError)
+	}
+	if fresh.LiveSave == "" {
+		return fresh, errors.New("current policy leaf could not be inspected during revalidation")
+	}
+	if fresh.Generation != s.Generation {
+		return fresh, &DeferredApplyError{Reason: "generation changed before policy leaf conflict revalidation"}
+	}
+	if a.AllowedLeaf(fresh.LiveSave, fresh) {
+		return fresh, &DeferredApplyError{Reason: "policy leaf became stock or owned during revalidation; awaiting fresh cycle"}
+	}
+	pauseErr := a.Pause(context.WithoutCancel(ctx))
+	fresh.Config.Mode = "observe"
+	return fresh, fmt.Errorf("policy leaf conflict; automatic mode paused: %v", pauseErr)
+}
+
 func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -325,8 +357,11 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	if err != nil {
 		return err
 	}
-	if !fresh.Compatible || fresh.Generation != s.Generation {
-		return errors.New("stale generation or incompatible current configuration")
+	if !fresh.Compatible {
+		return errors.New(fresh.CompatibilityError)
+	}
+	if fresh.Generation != s.Generation {
+		return &DeferredApplyError{Reason: "stale generation before transaction validation"}
 	}
 	before, err := a.Runner.Run(ctx, []string{"iptables-save", "-t", "mangle"}, "")
 	if err != nil {
@@ -349,8 +384,11 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	if err != nil {
 		return err
 	}
-	if currentSnapshot.Generation != s.Generation || !currentSnapshot.Compatible {
-		return errors.New("generation changed during transaction validation")
+	if !currentSnapshot.Compatible {
+		return errors.New(currentSnapshot.CompatibilityError)
+	}
+	if currentSnapshot.Generation != s.Generation {
+		return &DeferredApplyError{Reason: "generation changed during transaction validation"}
 	}
 	if !a.AllowedLeaf(currentSnapshot.LiveSave, currentSnapshot) {
 		unlock()
@@ -373,7 +411,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	}
 	manual := len(explicit) > 0 && explicit[0]
 	if !reflect.DeepEqual(current, s.Config) || (!manual && (!current.Enabled || current.Mode != "automatic")) {
-		return errors.New("current apply opt-in/config changed; no transaction")
+		return &DeferredApplyError{Reason: "current apply opt-in/config changed; no transaction"}
 	}
 	if err = a.Recovery.Arm(s.Config.Policy, ruleHash(rules)); err != nil {
 		return err

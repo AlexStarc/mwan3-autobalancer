@@ -330,6 +330,7 @@ func TestExplicitRollbackClearsLatchOnlyAfterVerifiedStock(t *testing.T) {
 			x.ready(t)
 			e := makeEngine(t, x)
 			e.state.ApplyBlocked = "old conflict"
+			e.state.ApplyDeferred = "generation changed during transaction validation"
 			e.state.LastError = "old conflict"
 			e.Adapter.Recovery.HeartbeatStopped.Store(true)
 			base := x.runner.fn
@@ -343,10 +344,10 @@ func TestExplicitRollbackClearsLatchOnlyAfterVerifiedStock(t *testing.T) {
 			}
 			r, err := e.Rollback(context.Background())
 			if success {
-				if err != nil || e.state.ApplyBlocked != "" || e.Adapter.Recovery.HeartbeatStopped.Load() || r.Mode != "observe" {
+				if err != nil || e.state.ApplyBlocked != "" || e.state.ApplyDeferred != "" || e.Adapter.Recovery.HeartbeatStopped.Load() || r.Mode != "observe" {
 					t.Fatal(r, err, e.state.ApplyBlocked)
 				}
-			} else if err == nil || e.state.ApplyBlocked == "" {
+			} else if err == nil || e.state.ApplyBlocked == "" || e.state.ApplyDeferred == "" {
 				t.Fatal("failed restoration cleared latch", r, err)
 			}
 		})

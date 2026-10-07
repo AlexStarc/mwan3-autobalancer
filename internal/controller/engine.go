@@ -33,6 +33,7 @@ type State struct {
 	Generation        string              `json:"generation"`
 	LastError         string              `json:"last_error"`
 	ApplyBlocked      string              `json:"apply_blocked,omitempty"`
+	ApplyDeferred     string              `json:"apply_deferred,omitempty"`
 }
 type Report struct {
 	Policy                 string     `json:"policy"`
@@ -67,6 +68,10 @@ func NewEngine(a *Adapter, b Budgets, statePath string) *Engine {
 		a.Recovery.HeartbeatStopped = new(atomic.Bool)
 	}
 	_ = ReadJSON(statePath, &e.state)
+	if legacyDeferredLatch(e.state.ApplyBlocked) {
+		e.state.ApplyDeferred = e.state.ApplyBlocked
+		e.state.ApplyBlocked = ""
+	}
 	e.init()
 	return e
 }
@@ -379,7 +384,9 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		e.mu.Unlock()
 	} else {
 		e.mu.Lock()
-		e.state.LastError = ""
+		if e.state.ApplyDeferred == "" {
+			e.state.LastError = ""
+		}
 		e.mu.Unlock()
 	}
 	if apply {
@@ -440,14 +447,8 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 	}
 	got, exists := chainLines(actual, "mwan3_policy_"+s.Config.Policy)
 	if !exists || !e.Adapter.AllowedLeaf(actual, s) {
-		pauseErr := e.Adapter.Pause(context.WithoutCancel(ctx))
-		err := fmt.Errorf("policy leaf conflict; automatic mode paused: %v", pauseErr)
-		e.mu.Lock()
-		e.state.ApplyBlocked = err.Error()
-		e.state.LastError = err.Error()
-		s.Config.Mode = "observe"
-		e.makeReport(s, now)
-		e.mu.Unlock()
+		fresh, conflictErr := e.Adapter.revalidateLeafConflict(ctx, s)
+		err := e.recordApplyError(fresh, now, conflictErr)
 		_ = e.save()
 		return err
 	}
@@ -465,9 +466,12 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 		e.mu.Lock()
 		e.state.Weights = weights
 		e.state.AppliedGeneration = s.Generation
+		e.clearDeferredDiagnostic()
 		if explicit {
+			if e.state.LastError == e.state.ApplyBlocked {
+				e.state.LastError = ""
+			}
 			e.state.ApplyBlocked = ""
-			e.state.LastError = ""
 		}
 		e.mu.Unlock()
 		return e.save()
@@ -482,15 +486,14 @@ func (e *Engine) Reconcile(ctx context.Context, s Snapshot, explicit bool) error
 		return nil
 	}
 	if err = e.Adapter.Apply(ctx, s, weights, explicit); err != nil {
-		e.mu.Lock()
-		e.state.LastError = err.Error()
-		e.state.ApplyBlocked = err.Error()
-		e.makeReport(s, now)
-		e.mu.Unlock()
-		return err
+		return e.recordApplyError(s, now, err)
 	}
 	e.mu.Lock()
 	e.state.Weights = weights
+	e.clearDeferredDiagnostic()
+	if e.state.LastError == e.state.ApplyBlocked {
+		e.state.LastError = ""
+	}
 	e.state.ApplyBlocked = ""
 	e.state.LastApply = now
 	e.state.AppliedGeneration = s.Generation
