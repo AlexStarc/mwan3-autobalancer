@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -42,6 +43,17 @@ func mutatingRestoreCount(x *fixture) int {
 		}
 	}
 	return n
+}
+
+// Compare every persisted field. JSON preserves timestamps but does not preserve
+// time.Time's internal Local/UTC location identity across a reload.
+func persistedJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestDeferredGenerationRecoversOnLaterAutomaticTick(t *testing.T) {
@@ -261,7 +273,7 @@ func TestDeferredLegacyLatchMigrationPreservesStateAndQuota(t *testing.T) {
 				want.ApplyBlocked = ""
 				want.ApplyDeferred = blocker
 			}
-			if !reflect.DeepEqual(reloaded.state, want) {
+			if persistedJSON(t, reloaded.state) != persistedJSON(t, want) {
 				t.Fatal("upgrade changed unrelated state or incorrectly migrated blocker", reloaded.state, want)
 			}
 			if err := reloaded.Tick(context.Background()); err != nil {
@@ -276,7 +288,7 @@ func TestDeferredLegacyLatchMigrationPreservesStateAndQuota(t *testing.T) {
 			}
 			currentQuota, _ := os.ReadFile(e.Budgets.Path)
 			currentSettings, _ := x.adapter.ReadFile("/etc/config/mwan3_autobalancer")
-			if string(quota) != string(currentQuota) || string(settings) != string(currentSettings) || x.runner.count("mwan3") != 0 || !reflect.DeepEqual(reloaded.state.Samples, e.state.Samples) || !reflect.DeepEqual(reloaded.state.Schedule, e.state.Schedule) {
+			if string(quota) != string(currentQuota) || string(settings) != string(currentSettings) || x.runner.count("mwan3") != 0 || persistedJSON(t, reloaded.state.Samples) != persistedJSON(t, e.state.Samples) || persistedJSON(t, reloaded.state.Schedule) != persistedJSON(t, e.state.Schedule) {
 				t.Fatal("migration/retry changed quota, settings, samples, schedule or added probes")
 			}
 		})
