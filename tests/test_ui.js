@@ -32,24 +32,52 @@ class Element {
 	append(children) { (Array.isArray(children) ? children : [children]).forEach(c => { if (c !== '') this.children.push(c); }); }
 	appendChild(child) { this.children.push(child); }
 	querySelectorAll() { return []; }
+	setAttribute(key, value) { this.attrs[key] = value; }
 	getBoundingClientRect() { return this.rect; }
 	text() { return this.children.map(c => c instanceof Element ? c.text() : String(c)).join(' '); }
 }
 const E = (tag, attrs, children) => new Element(tag, attrs, children);
 let sections = [{ '.name': 'main', '.type': 'main', mode: 'observe', policy: 'balanced', probe_bytes: '33554432', max_probe_bytes: '134217728', daily_budget_bytes: '268435456', interval_seconds: '21600' }];
 const mwan = [{ '.name': 'balanced', '.type': 'policy', use_member: ['wan_a', 'wan_b'] }, { '.name': 'wan_a', '.type': 'member', interface: 'wan' }, { '.name': 'wan_b', '.type': 'member', interface: 'wan2' }];
+const activity = { uciWrites: 0, rpcCalls: 0, renders: 0, resets: 0 };
 const uci = {
 	load: async () => {}, unload: () => {},
 	sections: (config, type) => (config === 'mwan3' ? mwan : sections).filter(s => s['.type'] === type),
 	get: (config, id, key) => (config === 'mwan3' ? mwan : sections).find(s => s['.name'] === id)?.[key],
-	set: (config, id, key, value) => { sections.find(s => s['.name'] === id)[key] = value; },
-	unset: (config, id, key) => { delete sections.find(s => s['.name'] === id)[key]; }
+	set: (config, id, key, value) => { activity.uciWrites++; sections.find(s => s['.name'] === id)[key] = value; },
+	unset: (config, id, key) => { activity.uciWrites++; delete sections.find(s => s['.name'] === id)[key]; }
 };
+// Stateful substitute for LuCI's public widget validation contract, not upstream
+// implementation code. Native UI/validation retain errors until revalidation:
+// https://github.com/openwrt/luci/blob/openwrt-24.10/modules/luci-base/htdocs/luci-static/resources/ui.js
+// https://github.com/openwrt/luci/blob/openwrt-24.10/modules/luci-base/htdocs/luci-static/resources/validation.js
+class ValidationWidget {
+	constructor(option, id) {
+		this.option = option; this.id = id; this.node = new Element('select');
+		this.automatic = new Element('option', { value: 'automatic' });
+		this.node.querySelectorAll = () => [this.automatic];
+		const classes = new Set();
+		this.node.classList = { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) };
+		this.valid = true; this.error = '';
+	}
+	getValue() { return this.option.formvalue(this.id); }
+	isValid() { return this.valid; }
+	getValidationError() { return this.error; }
+	triggerValidation() {
+		const previous = this.valid;
+		const result = this.option.validate ? this.option.validate(this.id, this.getValue()) : true;
+		this.valid = result === true; this.error = this.valid ? '' : String(result);
+		this.node.classList[this.valid ? 'remove' : 'add']('cbi-input-invalid');
+		if (this.valid) delete this.node.attrs['data-tooltip'];
+		else this.node.attrs['data-tooltip'] = this.error;
+		return previous !== this.valid;
+	}
+}
 class Option {
-	constructor(section, name, label, description) { this.section = section; this.name = name; this.label = label; this.description = description; this.values = {}; this.input = {}; }
+	constructor(section, name, label, description) { this.section = section; this.name = name; this.label = label; this.description = description; this.values = {}; this.input = {}; this.widgets = {}; }
 	value(key, value) { this.values[key] = value || key; }
 	formvalue(id) { return this.input[id] ?? (this.cfgvalue ? this.cfgvalue(id) : uci.get('mwan3_autobalancer', id, this.name)); }
-	getUIElement() { return { node: new Element('select') }; }
+	getUIElement(id) { return this.widgets[id] ||= new ValidationWidget(this, id); }
 }
 class Section {
 	constructor(map, type, id) { this.map = map; this.type = type; this.id = id; this.options = []; }
@@ -59,11 +87,11 @@ class Map {
 	constructor(config, title, description) { this.sections = []; this.title = title; this.description = description; }
 	section(klass, id, type) { const s = new Section(this, klass === 'named' ? type : id, klass === 'named' ? id : null); this.sections.push(s); return s; }
 	lookupOption(name, id) { return this.sections.filter(s => s.id === id || s.type === sections.find(x => x['.name'] === id)?.['.type']).flatMap(s => s.options.filter(o => o.name === name)); }
-	render() { return Promise.resolve(new Element('form')); }
-	reset() { return Promise.resolve(); }
+	render() { activity.renders++; return Promise.resolve(new Element('form')); }
+	reset() { activity.resets++; return Promise.resolve(); }
 }
 const methods = {};
-const rpc = { declare: ({ method }) => methods[method] = async () => ({}) };
+const rpc = { declare: ({ method }) => methods[method] = async () => { activity.rpcCalls++; return {}; } };
 const form = { Map, NamedSection: 'named', TypedSection: 'typed', Flag: 'flag', ListValue: 'list', Value: 'value' };
 const view = { extend: obj => obj };
 const notifications = [];
@@ -101,6 +129,38 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	assert.equal(page.probeButton.text(), _('Measure')); assert.equal(page.restoreButton.text(), _('Restore stock policy'));
 	assert.match(option('main', 'mode').validate('main', 'automatic'), /watchdog missing/);
 	assert.equal(option('main', 'mode').validate('main', 'observe'), true);
+	const modeOption = option('main', 'mode'), widget = modeOption.getUIElement('main');
+	const pending = { mode: 'automatic', probe_url: 'https://example.test/unsaved', interval_seconds: '9', daily_budget_bytes: '768' };
+	Object.entries(pending).forEach(([name, value]) => { option('main', name).input.main = value; });
+	const configBefore = JSON.stringify(sections), activityBefore = { ...activity }, mapBefore = page.map;
+	const missingReason = 'watchdog readiness: open /var/run/mwan3-autobalancer/watchdog.ready: no such file or directory';
+	page.refresh({ mode: 'observe', apply_ready: false, apply_unavailable_reason: missingReason });
+	widget.triggerValidation(); // Seed a cached error as native input validation does.
+	assert.equal(widget.isValid(), false);
+	assert.equal(widget.getValidationError(), _('Automatic mode unavailable: %s').format(missingReason));
+	assert.equal(widget.node.attrs['data-tooltip'], widget.getValidationError());
+	assert.equal(widget.node.classList.contains('cbi-input-invalid'), true);
+	assert.equal(widget.automatic.disabled, true); assert.equal(widget.automatic.attrs['aria-disabled'], 'true');
+	page.refresh({ mode: 'observe', apply_ready: true, apply_unavailable_reason: '' });
+	assert.equal(modeOption.validate('main', 'automatic'), true);
+	assert.equal(widget.isValid(), true, 'fresh readiness must clear the cached invalid state');
+	assert.equal(widget.getValidationError(), ''); assert.equal(widget.node.attrs['data-tooltip'], undefined); assert.equal(widget.node.classList.contains('cbi-input-invalid'), false);
+	assert.equal(widget.automatic.disabled, false); assert.equal(widget.automatic.attrs['aria-disabled'], 'false');
+	const newReason = 'watchdog readiness record expired';
+	page.refresh({ mode: 'observe', apply_ready: false, apply_unavailable_reason: newReason });
+	assert.equal(widget.isValid(), false); assert.equal(widget.node.classList.contains('cbi-input-invalid'), true);
+	assert.equal(widget.getValidationError(), _('Automatic mode unavailable: %s').format(newReason));
+	assert.equal(widget.node.attrs['data-tooltip'], widget.getValidationError());
+	assert.equal(widget.automatic.disabled, true); assert.equal(widget.automatic.attrs['aria-disabled'], 'true');
+	const changedReason = 'watchdog recorded process unavailable';
+	page.refresh({ mode: 'observe', apply_ready: false, apply_unavailable_reason: changedReason });
+	assert.equal(widget.getValidationError(), _('Automatic mode unavailable: %s').format(changedReason));
+	assert.equal(widget.node.attrs['data-tooltip'], widget.getValidationError());
+	assert.equal(modeOption.getUIElement('main'), widget, 'refresh must retain the native widget');
+	assert.equal(page.map, mapBefore); assert.equal(widget.getValue(), 'automatic');
+	Object.entries(pending).forEach(([name, value]) => assert.equal(option('main', name).formvalue('main'), value, name));
+	assert.equal(JSON.stringify(sections), configBefore); assert.deepEqual(activity, activityBefore, 'status refresh must not reset/render forms, write UCI, call RPC or probe');
+	Object.keys(pending).forEach(name => { delete option('main', name).input.main; });
 	const interval = option('main', 'interval_seconds');
 	assert.equal(interval.cfgvalue('main'), '6');
 	for (const hours of ['6', '6.5', '0.5', '0.016666666666666666', '168', '6,5']) assert.equal(interval.validate('main', hours), true, hours);

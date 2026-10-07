@@ -130,6 +130,7 @@ return view.extend({
 			mode.node.querySelectorAll('[data-value="automatic"], option[value="automatic"]').forEach(function(el) {
 				el.disabled = !r.apply_ready; el.setAttribute('aria-disabled', String(!r.apply_ready));
 			});
+			mode.triggerValidation();
 		}
 	},
 	action: function(command) {
