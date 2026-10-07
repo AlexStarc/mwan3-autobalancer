@@ -186,7 +186,7 @@ func TestDeferredConcurrentOptInChanges(t *testing.T) {
 }
 
 func TestDeferredClassificationPreservesHardFailures(t *testing.T) {
-	for _, kind := range []string{"snapshot-incompatible", "fresh-incompatible", "validation-incompatible", "unknown-test-error", "changed-leaf", "post-arm-failure", "watchdog-absent"} {
+	for _, kind := range []string{"snapshot-incompatible", "fresh-incompatible", "validation-incompatible", "unknown-test-error", "changed-leaf", "post-arm-failure", "watchdog-invalid"} {
 		t.Run(kind, func(t *testing.T) {
 			x, e, s := calibratedAutomaticEngine(t)
 			base := x.runner.fn
@@ -195,8 +195,8 @@ func TestDeferredClassificationPreservesHardFailures(t *testing.T) {
 				s.Compatible = false
 				s.CompatibilityError = "apply requires iptables legacy"
 			}
-			if kind == "watchdog-absent" {
-				if err := os.Remove(filepath.Join(x.dir, "watchdog.ready")); err != nil {
+			if kind == "watchdog-invalid" {
+				if err := AtomicJSON(filepath.Join(x.dir, "watchdog.ready"), WatchdogReady{PID: 1, Uptime: x.up}); err != nil {
 					t.Fatal(err)
 				}
 			}
