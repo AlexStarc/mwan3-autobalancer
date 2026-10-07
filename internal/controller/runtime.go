@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -338,20 +339,37 @@ type Recovery struct {
 }
 
 func (r Recovery) Ready() error {
-	var w WatchdogReady
-	if err := ReadJSON(filepath.Join(r.Dir, "watchdog.ready"), &w); err != nil {
-		return fmt.Errorf("watchdog readiness: %w", err)
+	var record struct {
+		PID    *int     `json:"pid"`
+		Uptime *float64 `json:"uptime"`
 	}
+	if err := ReadJSON(filepath.Join(r.Dir, "watchdog.ready"), &record); err != nil {
+		cause := fmt.Errorf("watchdog readiness: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return &WatchdogUnavailableError{Cause: cause}
+		}
+		return cause
+	}
+	if record.PID == nil || record.Uptime == nil {
+		return errors.New("watchdog readiness record is missing PID or uptime")
+	}
+	w := WatchdogReady{PID: *record.PID, Uptime: *record.Uptime}
 	up, err := r.Now()
 	if err != nil {
-		return err
+		return fmt.Errorf("watchdog uptime: %w", err)
 	}
-	if w.PID <= 1 || w.Uptime < 0 || up-w.Uptime < 0 || up-w.Uptime > 15 {
-		return errors.New("watchdog readiness is stale")
+	if w.PID <= 1 {
+		return errors.New("invalid watchdog PID")
+	}
+	if math.IsNaN(up) || math.IsInf(up, 0) || up < 0 || w.Uptime < 0 || up-w.Uptime < 0 {
+		return errors.New("watchdog readiness has invalid or future uptime")
 	}
 	cmd, err := r.ReadProc(w.PID)
 	if err != nil {
-		return errors.New("watchdog process absent")
+		if errors.Is(err, os.ErrNotExist) {
+			return &WatchdogUnavailableError{Cause: fmt.Errorf("watchdog process absent: %w", err)}
+		}
+		return fmt.Errorf("watchdog process inspection: %w", err)
 	}
 	found := false
 	for _, arg := range strings.Split(string(cmd), "\x00") {
@@ -361,6 +379,9 @@ func (r Recovery) Ready() error {
 	}
 	if !found {
 		return errors.New("watchdog PID is not the independent watchdog")
+	}
+	if up-w.Uptime > 15 {
+		return &WatchdogUnavailableError{Cause: errors.New("watchdog readiness expired")}
 	}
 	return nil
 }
@@ -407,7 +428,7 @@ func (r Recovery) Arm(policy string, chainHash ...string) error {
 		return errors.New("owner must restart after failed independent recovery")
 	}
 	if err := r.Ready(); err != nil {
-		return err
+		return &armReadinessError{Cause: err}
 	}
 	var previous Lease
 	if err := ReadJSON(filepath.Join(r.Dir, "lease.json"), &previous); err == nil {

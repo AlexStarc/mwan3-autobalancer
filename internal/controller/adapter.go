@@ -343,7 +343,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 		return errors.New(s.CompatibilityError)
 	}
 	if err := a.Recovery.Ready(); err != nil {
-		return err
+		return deferUnavailableWatchdog(err)
 	}
 	ctx, unlock, err := commandFileLock(ctx, a.LockPath)
 	if err != nil {
@@ -351,7 +351,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	}
 	defer unlock()
 	if err = a.Recovery.Ready(); err != nil {
-		return err
+		return deferUnavailableWatchdog(err)
 	}
 	fresh, err := a.Discover(ctx)
 	if err != nil {
@@ -414,6 +414,10 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 		return &DeferredApplyError{Reason: "current apply opt-in/config changed; no transaction"}
 	}
 	if err = a.Recovery.Arm(s.Config.Policy, ruleHash(rules)); err != nil {
+		var readiness *armReadinessError
+		if errors.As(err, &readiness) {
+			return deferUnavailableWatchdog(readiness.Cause)
+		}
 		return err
 	}
 	// Every failure after this point may have committed and must actively recover independently.
