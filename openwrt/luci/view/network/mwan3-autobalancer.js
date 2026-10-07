@@ -26,6 +26,7 @@ var pageCSS = '.mwan3-ab-view{width:100%;max-width:100%;min-width:0;box-sizing:b
 	'.mwan3-ab-view .cbi-map,.mwan3-ab-view .cbi-section,.mwan3-ab-view .cbi-value{min-width:0!important;max-width:100%;box-sizing:border-box}' +
 	'.mwan3-ab-view .cbi-value{display:block;width:100%!important}' +
 	'.mwan3-ab-view .cbi-value-title,.mwan3-ab-view .cbi-value-field{display:block;float:none!important;width:100%!important;min-width:0!important;max-width:100%;margin:0!important;padding:.35rem 0!important;box-sizing:border-box;text-align:left}' +
+	'.mwan3-ab-view .cbi-value-title{text-align:left!important;white-space:normal!important;overflow-wrap:anywhere}' +
 	'.mwan3-ab-view .cbi-value-field input:not([type=checkbox]):not([type=radio]),.mwan3-ab-view .cbi-value-field select,.mwan3-ab-view .cbi-value-field .cbi-dropdown{width:100%!important;min-width:0!important;max-width:100%;box-sizing:border-box}' +
 	'.mwan3-ab-view .cbi-value-description{max-width:100%;white-space:normal}' +
 	'}';
@@ -78,14 +79,16 @@ return view.extend({
 		if (!this.root || !this.root.isConnected) return;
 		var top = this.root.getBoundingClientRect().top + (window.scrollY || 0), bottom = 0;
 		document.querySelectorAll('header,.navbar,.navbar-fixed-top,#header,#mainmenu,#topmenu').forEach(function(el) {
-			var rect = el.getBoundingClientRect(), ancestor = el, pinned = false;
+			var ancestor = el, pinned = false, extent = 0;
 			while (ancestor) {
 				var css = window.getComputedStyle(ancestor), box = ancestor.getBoundingClientRect();
+				if (box.width > 0 && box.height > 0) extent = Math.max(extent, box.bottom);
 				if ((css.position === 'fixed' || css.position === 'sticky') && box.top <= 0) { pinned = true; break; }
 				ancestor = ancestor.parentElement;
 			}
-			// Some stock themes let a relative menu extend outside the fixed header.
-			if (pinned && rect.width > 0 && rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+			// Stock header layout containers can extend below both header and menu.
+			// Measure only their ancestry, never transient dropdown descendants.
+			if (pinned) bottom = Math.max(bottom, extent);
 		});
 		// Document coordinates keep the same clearance when polling while scrolled.
 		this.root.style.paddingTop = bottom > top ? Math.ceil(bottom - top + 12) + 'px' : '0px';
