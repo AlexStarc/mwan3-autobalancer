@@ -1,0 +1,5 @@
+#!/bin/sh
+# Register the bundled catalog without changing the selected LuCI language.
+uci -q get luci.languages.ru >/dev/null && exit 0
+uci set luci.languages.ru='Русский (Russian)' || exit 1
+uci commit luci

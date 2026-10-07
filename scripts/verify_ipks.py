@@ -54,7 +54,7 @@ def inspect(path, expected):
             raise ValueError("backend has a dynamic loader")
         required = {"etc/init.d/mwan3-autobalancer", "etc/config/mwan3_autobalancer", "usr/libexec/mwan3-autobalancer/watchdog", "usr/libexec/mwan3-autobalancer/restore", "usr/libexec/rpcd/mwan3.autobalancer"}
     else:
-        required = {"www/luci-static/resources/view/network/mwan3-autobalancer.js", "usr/share/luci/menu.d/luci-app-mwan3-autobalancer.json", "usr/share/rpcd/acl.d/luci-app-mwan3-autobalancer.json"}
+        required = {"www/luci-static/resources/view/network/mwan3-autobalancer.js", "usr/share/luci/menu.d/luci-app-mwan3-autobalancer.json", "usr/share/rpcd/acl.d/luci-app-mwan3-autobalancer.json", "usr/lib/lua/luci/i18n/mwan3-autobalancer.ru.lmo", "etc/uci-defaults/40-mwan3-autobalancer-language"}
     if not required.issubset(content):
         raise ValueError("missing runtime files: " + str(sorted(required - content.keys())))
     print(f"Verified {path.name}: {fields['Architecture']}, {len(content)} files")
