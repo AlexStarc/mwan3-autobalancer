@@ -46,6 +46,7 @@ This is connection-based load balancing. It does not combine several WANs within
 - [Emergency recovery and removal commands](docs/RECOVERY.ru.md)
 - [Calibration, maintenance and probe budgets (Russian)](docs/SCHEDULING.ru.md)
 - [Router validation and its limits (Russian)](docs/DEVICE-VALIDATION.ru.md)
+- [v0.1.2 retry fix and router upgrade validation (Russian)](docs/DEVICE-VALIDATION-0.1.2.ru.md)
 
 The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by six-hour maintenance probes; an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
 
