@@ -10,6 +10,8 @@ Introduce a typed/sentinel deferred-apply error emitted only before Recovery.Arm
 
 Reconcile records the transient reason without assigning ApplyBlocked, does not commit stale rules or update LastApply/AppliedGeneration, and makes no in-call retry. The next normal tick discovers and calculates again; normal watchdog, configuration, lock, topology, leaf ownership, opt-in, hysteresis and minimum-apply checks still apply. Successful application/equivalent-rule reconciliation clears transient errors without clearing unrelated persistent blockers.
 
+Before classifying a leaf as foreign, Reconcile revalidates discovery and the current leaf under the stock shared lock. A real WAN transition plus native hotplug rebuild must defer safely; an unchanged-generation foreign leaf still blocks. Release this guard lock before Adapter.Apply reacquires it for the full transaction. This also prevents a stale initial read from misclassifying a leaf that has since become legitimate stock/owned.
+
 ## Upgrade
 
 On loading state, retire only exact old latch strings `generation changed during transaction validation` and `stale generation or incompatible current configuration`; both originate before any write in v0.1.0-r2. Retain every other blocker and all samples/schedules/counters. No manual state/budget deletion. The next Apply still verifies the current chain and recovery gates; migration does not bypass them.
@@ -17,7 +19,7 @@ On loading state, retire only exact old latch strings `generation changed during
 ## Acceptance
 
 1. A generation change injected during --test results in zero mutating writes, then automatic application succeeds on a later stable tick without rollback/restart/mode toggling.
-2. A stale initial snapshot is also retryable; incompatible snapshots remain fail-closed and accurately diagnosed.
+2. A stale initial snapshot is also retryable, including a real offline WAN plus stock leaf rebuild; incompatible snapshots remain fail-closed and accurately diagnosed. Conflict classification is based on a current locked snapshot, not an older caller snapshot.
 3. Repeated topology changes do not form an immediate retry loop or trigger extra probes. Observe/disabled mode cannot apply after a concurrent opt-in change.
 4. Persisted legacy safe latch loads without that latch and resumes under ordinary gates, preserving samples and schedules; unknown, conflict and postcommit failure latches survive reload.
 5. Existing postcommit rollback, ownership conflict, watchdog, concurrency and budget tests continue to pass.
