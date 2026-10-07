@@ -325,8 +325,11 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	if err != nil {
 		return err
 	}
-	if !fresh.Compatible || fresh.Generation != s.Generation {
-		return errors.New("stale generation or incompatible current configuration")
+	if !fresh.Compatible {
+		return errors.New(fresh.CompatibilityError)
+	}
+	if fresh.Generation != s.Generation {
+		return &DeferredApplyError{Reason: "stale generation before transaction validation"}
 	}
 	before, err := a.Runner.Run(ctx, []string{"iptables-save", "-t", "mangle"}, "")
 	if err != nil {
@@ -349,8 +352,11 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	if err != nil {
 		return err
 	}
-	if currentSnapshot.Generation != s.Generation || !currentSnapshot.Compatible {
-		return errors.New("generation changed during transaction validation")
+	if !currentSnapshot.Compatible {
+		return errors.New(currentSnapshot.CompatibilityError)
+	}
+	if currentSnapshot.Generation != s.Generation {
+		return &DeferredApplyError{Reason: "generation changed during transaction validation"}
 	}
 	if !a.AllowedLeaf(currentSnapshot.LiveSave, currentSnapshot) {
 		unlock()
@@ -373,7 +379,7 @@ func (a *Adapter) Apply(ctx context.Context, s Snapshot, w []int, explicit ...bo
 	}
 	manual := len(explicit) > 0 && explicit[0]
 	if !reflect.DeepEqual(current, s.Config) || (!manual && (!current.Enabled || current.Mode != "automatic")) {
-		return errors.New("current apply opt-in/config changed; no transaction")
+		return &DeferredApplyError{Reason: "current apply opt-in/config changed; no transaction"}
 	}
 	if err = a.Recovery.Arm(s.Config.Policy, ruleHash(rules)); err != nil {
 		return err
