@@ -1,0 +1,237 @@
+msgid ""
+msgstr ""
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "%s / %s MiB"
+msgstr "%s / %s МиБ"
+
+msgid "%s Mbit/s"
+msgstr "%s Мбит/с"
+
+msgid "%s h"
+msgstr "%s ч"
+
+msgid "%s min"
+msgstr "%s мин"
+
+msgid "%s s"
+msgstr "%s с"
+
+msgid "%s, MiB"
+msgstr "%s, МиБ"
+
+msgid "Add only interfaces in the selected policy. Empty values inherit the global settings."
+msgstr "Добавляйте только интерфейсы выбранной политики. Пустые значения наследуются из общих настроек."
+
+msgid "After changes and periodically"
+msgstr "После изменений и периодически"
+
+msgid "An empty field inherits the global value."
+msgstr "Пустое поле наследует общее значение."
+
+msgid "An override for this WAN already exists"
+msgstr "Переопределение этого WAN уже существует"
+
+msgid "Applied"
+msgstr "Применено"
+
+msgid "Autobalancing"
+msgstr "Автобалансировка"
+
+msgid "Automatic"
+msgstr "Автоматический"
+
+msgid "Automatic application"
+msgstr "Автоматическое применение"
+
+msgid "Automatic application is available."
+msgstr "Автоматическое применение доступно."
+
+msgid "Automatic application unavailable: %s"
+msgstr "Автоматическое применение недоступно: %s"
+
+msgid "Automatic mode unavailable: %s"
+msgstr "Автоматический режим недоступен: %s"
+
+msgid "Availability"
+msgstr "Доступность"
+
+msgid "Calibration"
+msgstr "Калибровка"
+
+msgid "Channel data unavailable"
+msgstr "Данные каналов недоступны"
+
+msgid "Checks incomplete"
+msgstr "проверка не завершена"
+
+msgid "Controller unavailable. Stock policy restoration remains available independently."
+msgstr "Контроллер недоступен. Восстановление штатной политики доступно независимо от него."
+
+msgid "Current"
+msgstr "Актуально"
+
+msgid "Daily reservation"
+msgstr "Суточный резерв"
+
+msgid "Daily reservation / limit"
+msgstr "Резерв / лимит за сутки"
+
+msgid "Daily reservation exhausted"
+msgstr "Суточный резерв исчерпан"
+
+msgid "Daily reservation is smaller than one measurement"
+msgstr "Суточный резерв меньше объёма одного замера"
+
+msgid "Default: 6 hours; used by the periodic schedule."
+msgstr "По умолчанию 6 часов; используется периодическим расписанием."
+
+msgid "Disabled"
+msgstr "Отключён"
+
+msgid "Enabled"
+msgstr "Включено"
+
+msgid "Enter a size from 0.25 to %s MiB, in whole bytes"
+msgstr "Укажите размер от 0.25 до %s МиБ, кратный одному байту"
+
+msgid "Enter between 1 minute and 168 hours, with whole-second precision"
+msgstr "Укажите от 1 минуты до 168 часов с точностью до целой секунды"
+
+msgid "Error"
+msgstr "Ошибка"
+
+msgid "HTTP(S), without credentials or a fragment. {bytes} in the path or query sets the size for a bounded retry. An empty field disables measurements."
+msgstr "HTTP(S), без логина и фрагмента. {bytes} в пути или запросе задаёт размер для ограниченного повторного замера. Пустое поле выключает замеры."
+
+msgid "Holding shares"
+msgstr "Удержание долей"
+
+msgid "Insufficient reservation for a retry"
+msgstr "Недостаточно резерва для повторного замера"
+
+msgid "Interval, hours"
+msgstr "Интервал, часы"
+
+msgid "Invalid HTTP(S) URL"
+msgstr "Некорректный HTTP(S) URL"
+
+msgid "Invalid policy"
+msgstr "Некорректная политика"
+
+msgid "Logical WAN"
+msgstr "Логический WAN"
+
+msgid "Maximum enlarged measurement"
+msgstr "Максимум увеличенного замера"
+
+msgid "Measure"
+msgstr "Измерить"
+
+msgid "Measurement"
+msgstr "Измерение"
+
+msgid "Measurement cycle queued; weights will not be applied."
+msgstr "Цикл измерений поставлен в очередь; веса не применяются."
+
+msgid "Measurement size exceeds the maximum size"
+msgstr "Объём замера превышает максимальный размер"
+
+msgid "Measurements disabled"
+msgstr "Замеры выключены"
+
+msgid "Measuring"
+msgstr "Измерение"
+
+msgid "Mode"
+msgstr "Режим"
+
+msgid "Next measurement"
+msgstr "Следующий замер"
+
+msgid "Observe"
+msgstr "Наблюдение"
+
+msgid "Offline"
+msgstr "Офлайн"
+
+msgid "Online"
+msgstr "Онлайн"
+
+msgid "Only after changes"
+msgstr "Только после изменений"
+
+msgid "Periodic measurements"
+msgstr "Периодические замеры"
+
+msgid "Phase"
+msgstr "Фаза"
+
+msgid "Policy: %s; mode: %s; phase: %s; next measurement: %s"
+msgstr "Политика: %s; режим: %s; фаза: %s; следующий замер: %s"
+
+msgid "Proposed"
+msgstr "Предложено"
+
+msgid "Reservation is smaller than one measurement"
+msgstr "Резерв меньше одного замера"
+
+msgid "Restore stock policy"
+msgstr "Восстановить штатную политику"
+
+msgid "Restore the previous policy using the button below first"
+msgstr "Сначала восстановите предыдущую политику кнопкой ниже"
+
+msgid "Schedule"
+msgstr "Расписание"
+
+msgid "Set the URL and limits, then run a test measurement. Installation uses observe mode and does not start downloads with an empty URL."
+msgstr "Настройте URL и лимиты, затем выполните пробный замер. Установка работает в режиме наблюдения и не запускает загрузки с пустым URL."
+
+msgid "Settings"
+msgstr "Настройки"
+
+msgid "Size of one measurement"
+msgstr "Объём одного замера"
+
+msgid "Speed / age"
+msgstr "Скорость / возраст"
+
+msgid "Speed is estimated from completed test downloads. The reservation includes planned data; it is not a counter of actual traffic. The limit applies separately to each WAN, per UTC day."
+msgstr "Скорость — оценка по завершённым тестовым загрузкам. Резерв включает запланированный объём; это не счётчик фактического трафика. Лимит действует отдельно для каждого WAN, сутки — UTC."
+
+msgid "Stale"
+msgstr "Устарело"
+
+msgid "Stock policy restored; observe mode enabled."
+msgstr "Штатная политика восстановлена, включён режим наблюдения."
+
+msgid "Stock share"
+msgstr "Штатная доля"
+
+msgid "Test download URL"
+msgstr "URL тестовой загрузки"
+
+msgid "The limit applies separately to each logical WAN."
+msgstr "Лимит отдельно для каждого логического WAN."
+
+msgid "Unknown"
+msgstr "Неизвестно"
+
+msgid "WAN"
+msgstr "WAN"
+
+msgid "WAN is not in the selected policy"
+msgstr "WAN отсутствует в выбранной политике"
+
+msgid "WAN overrides"
+msgstr "Переопределения WAN"
+
+msgid "Waiting for checks"
+msgstr "ожидание проверки"
+
+msgid "mwan3 policy"
+msgstr "Политика mwan3"

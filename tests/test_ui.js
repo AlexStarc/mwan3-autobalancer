@@ -4,6 +4,29 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../openwrt/luci/view/network/mwan3-autobalancer.js'), 'utf8');
+const language = process.argv[2] || 'en';
+assert.ok(['en', 'ru'].includes(language));
+const po = fs.readFileSync(path.join(__dirname, '../openwrt/luci/po/ru/mwan3-autobalancer.po'), 'utf8');
+const catalog = {};
+for (const entry of po.split(/\n\n/)) {
+	const id = entry.match(/^msgid (".*")$/m), value = entry.match(/^msgstr (".*")$/m);
+	if (id && value && JSON.parse(id[1])) {
+		const key = JSON.parse(id[1]);
+		assert.equal(catalog[key], undefined, 'duplicate catalog key');
+		catalog[key] = JSON.parse(value[1]);
+		assert.ok(catalog[key], key);
+		assert.equal((key.match(/%s/g) || []).length, (catalog[key].match(/%s/g) || []).length, 'format placeholders: ' + key);
+	}
+}
+const _ = message => language === 'ru' ? catalog[message] ?? message : message;
+String.prototype.format = function(...args) { let index = 0; return String(this).replace(/%s/g, () => String(args[index++])); };
+const msgids = new Set(Array.from(source.matchAll(/_\('([^'\n]*)'\)/g), match => match[1]));
+const menuTitle = JSON.parse(fs.readFileSync(path.join(__dirname, '../openwrt/luci/menu.d/luci-app-mwan3-autobalancer.json'), 'utf8'))['admin/network/mwan3-autobalancer'].title;
+assert.equal(menuTitle, 'Autobalancing');
+msgids.add(menuTitle);
+assert.deepEqual(Object.keys(catalog).sort(), Array.from(msgids).sort(), 'all native msgids have complete Russian translations and no stale entries');
+assert.doesNotMatch(source, /[А-Яа-яЁё]/, 'English source must not hardcode Russian');
+assert.equal(_('Autobalancing'), language === 'ru' ? 'Автобалансировка' : 'Autobalancing');
 class Element {
 	constructor(tag, attrs = {}, children = []) { this.tag = tag; this.attrs = attrs; this.children = []; this.disabled = false; this.style = {}; this.isConnected = false; this.rect = { top: 20, bottom: 100, width: 390, height: 80 }; this.append(children); }
 	append(children) { (Array.isArray(children) ? children : [children]).forEach(c => { if (c !== '') this.children.push(c); }); }
@@ -23,17 +46,17 @@ const uci = {
 	unset: (config, id, key) => { delete sections.find(s => s['.name'] === id)[key]; }
 };
 class Option {
-	constructor(section, name) { this.section = section; this.name = name; this.values = {}; this.input = {}; }
+	constructor(section, name, label, description) { this.section = section; this.name = name; this.label = label; this.description = description; this.values = {}; this.input = {}; }
 	value(key, value) { this.values[key] = value || key; }
 	formvalue(id) { return this.input[id] ?? (this.cfgvalue ? this.cfgvalue(id) : uci.get('mwan3_autobalancer', id, this.name)); }
 	getUIElement() { return { node: new Element('select') }; }
 }
 class Section {
 	constructor(map, type, id) { this.map = map; this.type = type; this.id = id; this.options = []; }
-	option(klass, name) { const o = new Option(this, name); this.options.push(o); return o; }
+	option(klass, name, label, description) { const o = new Option(this, name, label, description); this.options.push(o); return o; }
 }
 class Map {
-	constructor() { this.sections = []; }
+	constructor(config, title, description) { this.sections = []; this.title = title; this.description = description; }
 	section(klass, id, type) { const s = new Section(this, klass === 'named' ? type : id, klass === 'named' ? id : null); this.sections.push(s); return s; }
 	lookupOption(name, id) { return this.sections.filter(s => s.id === id || s.type === sections.find(x => x['.name'] === id)?.['.type']).flatMap(s => s.options.filter(o => o.name === name)); }
 	render() { return Promise.resolve(new Element('form')); }
@@ -43,7 +66,8 @@ const methods = {};
 const rpc = { declare: ({ method }) => methods[method] = async () => ({}) };
 const form = { Map, NamedSection: 'named', TypedSection: 'typed', Flag: 'flag', ListValue: 'list', Value: 'value' };
 const view = { extend: obj => obj };
-const ui = { createHandlerFn: () => () => {}, addNotification: () => {} };
+const notifications = [];
+const ui = { createHandlerFn: () => () => {}, addNotification: (title, message) => notifications.push(message.text()) };
 const dom = { content: (el, children) => { el.children = []; el.append(children); } };
 const poll = { add: () => {} };
 const header = new Element('header'); header.position = 'fixed'; header.rect = { top: 0, bottom: 40, width: 390, height: 40 };
@@ -53,7 +77,7 @@ const menu = new Element('ul', { id: 'topmenu' }); menu.position = 'relative'; m
 const submenu = new Element('ul'); submenu.position = 'absolute'; submenu.parentElement = menu; submenu.rect = { top: 120, bottom: 700, width: 390, height: 580 }; menu.appendChild(submenu);
 const document = { querySelectorAll: () => [header, menu] };
 const window = { scrollY: 0, getComputedStyle: el => ({ position: el.position || 'static' }) };
-const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E', 'document', 'window', 'requestAnimationFrame', source)(view, rpc, form, uci, poll, ui, dom, E, document, window, callback => callback());
+const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E', 'document', 'window', 'requestAnimationFrame', '_', source)(view, rpc, form, uci, poll, ui, dom, E, document, window, callback => callback(), _);
 (async () => {
 	const root = await page.render([{ apply_ready: false, apply_unavailable_reason: 'watchdog missing', channels: [] }]);
 	assert.equal(root.attrs.class, 'mwan3-ab-view');
@@ -70,6 +94,11 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	assert.equal(root.style.paddingTop, '0px', 'ordinary document headers need no extra clearance');
 	header.position = 'fixed'; page.headerSpacing();
 	const option = (id, name) => page.map.lookupOption(name, id)[0];
+	assert.equal(page.map.title, _('Autobalancing'));
+	assert.equal(option('main', 'probe_url').label, _('Test download URL'));
+	assert.equal(option('main', 'interval_seconds').label, _('Interval, hours'));
+	assert.equal(option('main', 'probe_bytes').label, _('%s, MiB').format(_('Size of one measurement')));
+	assert.equal(page.probeButton.text(), _('Measure')); assert.equal(page.restoreButton.text(), _('Restore stock policy'));
 	assert.match(option('main', 'mode').validate('main', 'automatic'), /watchdog missing/);
 	assert.equal(option('main', 'mode').validate('main', 'observe'), true);
 	const interval = option('main', 'interval_seconds');
@@ -87,7 +116,7 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	assert.equal(option('main', 'probe_url').validate('main', 'https://example.test/{bytes}?n={bytes}'), true);
 	for (const url of ['ftp://example.test/x', 'https://a:b@example.test/', 'https://example.test/#x', 'http://{bytes}.example.test']) assert.notEqual(option('main', 'probe_url').validate('main', url), true);
 	page.report = { lease_active: true, policy: 'balanced' };
-	assert.match(option('main', 'policy').validate('main', 'other'), /Сначала восстановите/);
+	assert.equal(option('main', 'policy').validate('main', 'other'), _('Restore the previous policy using the button below first'));
 	assert.equal(option('main', 'policy').validate('main', 'balanced'), true);
 	assert.notEqual(option('main', 'policy').validate('main', 'x;touch-pwn'), true);
 	assert.equal(option('main', 'probe_bytes').validate('main', '32'), true);
@@ -105,41 +134,54 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	option('override', 'probe_bytes').write('override', '');
 	assert.equal(uci.get('mwan3_autobalancer', 'override', 'probe_bytes'), undefined);
 	sections.push({ '.name': 'duplicate', '.type': 'wan', interface: 'wan' });
-	assert.match(option('override', 'interface').validate('override', 'wan'), /уже существует/);
+	assert.equal(option('override', 'interface').validate('override', 'wan'), _('An override for this WAN already exists'));
 	assert.notEqual(option('override', 'interface').validate('override', 'unknown'), true);
 	page.refresh({ apply_ready: true, busy: false, channels: Array.from({ length: 6 }, (_, i) => ({ interface: `wan${i}`, online: true, enabled: true, metric: 1, baseline_weight: 500, proposed_weight: i === 0 ? 1000 : 0, applied_weight: 0, speed_mbps: null, age_seconds: null, probe_state: i === 1 ? 'historical' : i === 2 ? 'measuring' : i === 3 ? 'failed' : 'unknown', budget_used_bytes: 0, budget_limit_bytes: 268435456 })) });
 	const text = page.summary.text();
-	assert.match(text, /wan5/); assert.match(text, /16.7%/); assert.match(text, /Устарело/); assert.match(text, /Измерение/); assert.match(text, /Неизвестно/); assert.match(text, /Ошибка/);
-	assert.doesNotMatch(text, /0\.00 Мбит/); assert.match(text, /100\.0%/);
+	assert.match(text, /wan5/); assert.match(text, /16.7%/); assert.ok(text.includes(_('Stale'))); assert.ok(text.includes(_('Measuring'))); assert.ok(text.includes(_('Unknown'))); assert.ok(text.includes(_('Error')));
+	assert.ok(!text.includes(_('%s Mbit/s').format('0.00'))); assert.match(text, /100\.0%/);
 	function findTable(element) { if (element.tag === 'table') return element; for (const child of element.children) if (child instanceof Element) { const table = findTable(child); if (table) return table; } }
 	function rows() { return findTable(page.summary).children.slice(1).map(row => row.children.map(cell => cell.text())); }
 	const channel = (iface, extra = {}) => ({ interface: iface, enabled: true, online: true, metric: 1, baseline_weight: 1000, proposed_weight: 0, applied_weight: 0, speed_mbps: null, age_seconds: null, probe_state: 'unknown', budget_used_bytes: 0, budget_limit_bytes: 268435456, ...extra });
 	page.refresh({ apply_ready: true, phase: 'calibrating', channels: [channel('disabled', { enabled: false }), channel('modem1', { proposed_weight: 200, applied_weight: 333, phase: 'calibrating' }), channel('modem2', { proposed_weight: 300, applied_weight: 333, phase: 'maintenance' }), channel('petra', { proposed_weight: 500, applied_weight: 333, phase: 'holding' }), channel('offline', { online: false, metric: 0 }), channel('reserve', { metric: 2, phase: 'disabled' })] });
 	let tableRows = rows();
-	const labels = ['WAN', 'Доступность', 'Фаза', 'Измерение', 'Скорость / возраст', 'Штатная доля', 'Предложено', 'Применено', 'Следующий замер', 'Резерв / лимит за сутки'];
+	const labels = ['WAN', _('Availability'), _('Phase'), _('Measurement'), _('Speed / age'), _('Stock share'), _('Proposed'), _('Applied'), _('Next measurement'), _('Daily reservation / limit')];
 	findTable(page.summary).children.slice(1).forEach(row => {
 		assert.match(row.attrs.class, /mwan3-ab-channel/);
 		assert.deepEqual(row.children.map(cell => cell.attrs['data-title']), labels, 'every mobile card metric retains a label');
 	});
-	assert.equal(tableRows[0][1], 'Отключён'); assert.equal(tableRows[0][5], '0.0%');
+	assert.equal(tableRows[0][1], _('Disabled')); assert.equal(tableRows[0][5], '0.0%');
 	assert.equal(tableRows[1][5], '33.3%'); assert.equal(tableRows[2][5], '33.3%'); assert.equal(tableRows[3][5], '33.3%');
 	assert.equal(tableRows[4][5], '0.0%'); assert.equal(tableRows[5][5], '0.0%');
 	assert.equal(tableRows[1][6], '20.0%'); assert.equal(tableRows[2][6], '30.0%'); assert.equal(tableRows[3][6], '50.0%');
 	assert.equal(tableRows[1][7], '33.3%'); assert.equal(tableRows[0][7], '0.0%');
-	assert.match(page.summary.text(), /фаза: Калибровка/);
-	assert.equal(tableRows[1][2], 'Калибровка'); assert.equal(tableRows[2][2], 'Периодические замеры'); assert.equal(tableRows[3][2], 'Удержание долей'); assert.equal(tableRows[5][2], 'Замеры выключены');
+	assert.ok(page.summary.text().includes(_('Policy: %s; mode: %s; phase: %s; next measurement: %s').format('—', _('Observe'), _('Calibration'), '—')));
+	assert.equal(tableRows[1][2], _('Calibration')); assert.equal(tableRows[2][2], _('Periodic measurements')); assert.equal(tableRows[3][2], _('Holding shares')); assert.equal(tableRows[5][2], _('Measurements disabled'));
 	page.refresh({ phase: 'error', channels: [channel('spent', { budget_used_bytes: 268435456, probe_error: 'daily probe budget exhausted', probe_state: 'failed', phase: 'error' }), channel('small', { budget_used_bytes: 268435456 - 16 * 1048576 }), channel('inflight', { budget_used_bytes: 268435456, probe_state: 'measuring', probe_error: 'previous failure' }), channel('retry', { budget_used_bytes: 268435456 - 32 * 1048576, probe_error: 'daily probe budget exhausted' })] });
 	tableRows = rows();
-	assert.equal(tableRows[0][3], 'Суточный резерв исчерпан'); assert.equal(tableRows[0][2], 'Ошибка');
-	assert.equal(tableRows[1][3], 'Резерв меньше одного замера');
-	assert.equal(tableRows[2][3], 'Измерение');
-	assert.equal(tableRows[3][3], 'Недостаточно резерва для повторного замера');
-	assert.match(tableRows[0][9], /Суточный резерв исчерпан/); assert.match(page.summary.text(), /фаза: Ошибка/);
+	assert.equal(tableRows[0][3], _('Daily reservation exhausted')); assert.equal(tableRows[0][2], _('Error'));
+	assert.equal(tableRows[1][3], _('Reservation is smaller than one measurement'));
+	assert.equal(tableRows[2][3], _('Measuring'));
+	assert.equal(tableRows[3][3], _('Insufficient reservation for a retry'));
+	assert.ok(tableRows[0][9].includes(_('Daily reservation exhausted'))); assert.ok(page.summary.text().includes(_('Policy: %s; mode: %s; phase: %s; next measurement: %s').format('—', _('Observe'), _('Error'), '—')));
 	// Logical-WAN overrides set the minimum future reservation independently.
 	sections = sections.filter(s => s['.type'] !== 'wan'); sections.push({ '.name': 'small_override', '.type': 'wan', interface: 'wan2', probe_bytes: String(16 * 1048576) });
 	page.refresh({ phase: 'maintenance', channels: [channel('wan2', { budget_used_bytes: 268435456 - 16 * 1048576 }), channel('inherited', { budget_used_bytes: 268435456 - 16 * 1048576 })] });
-	assert.equal(rows()[0][3], 'Неизвестно'); assert.equal(rows()[1][3], 'Резерв меньше одного замера');
+	assert.equal(rows()[0][3], _('Unknown')); assert.equal(rows()[1][3], _('Reservation is smaller than one measurement'));
+	page.refresh({ channels: [channel('seconds', { speed_mbps: 12.5, age_seconds: 25 }), channel('minutes', { speed_mbps: 8, age_seconds: 120 }), channel('hours', { speed_mbps: 5, age_seconds: 5400 })] });
+	assert.equal(rows()[0][3], _('Current'));
+	assert.equal(rows()[0][4], _('%s Mbit/s').format('12.50') + ' / ' + _('%s s').format(25));
+	assert.ok(rows()[1][4].endsWith(_('%s min').format(2)));
+	assert.ok(rows()[2][4].endsWith(_('%s h').format('1.5')));
+	assert.ok(rows()[0][9].includes(_('%s / %s MiB').format('0.0', '256.0')));
+	assert.equal(option('main', 'probe_bytes').validate('main', '0.1'), _('Enter a size from 0.25 to %s MiB, in whole bytes').format(1024));
+	await page.action(methods.probe);
+	assert.equal(notifications.pop(), _('Measurement cycle queued; weights will not be applied.'));
+	await page.action(methods.rollback);
+	assert.equal(notifications.pop(), _('Stock policy restored; observe mode enabled.'));
 	page.refresh({ error: 'status_unavailable' });
+	assert.ok(page.summary.text().includes(_('Controller unavailable. Stock policy restoration remains available independently.')));
 	assert.equal(page.probeButton.disabled, true); assert.equal(page.restoreButton.disabled, false);
-	console.log('LuCI fixtures passed: mobile labels/header clearance, exact hours conversion, active shares/phases/quotas, safe settings, fallback Restore');
+	console.log(language + ' LuCI fixtures passed: mobile labels/header clearance, exact hours conversion, active shares/phases/quotas, safe settings, fallback Restore');
+	if (!process.argv[2]) process.stdout.write(require('node:child_process').execFileSync(process.execPath, [__filename, 'ru'], { encoding: 'utf8' }));
 })().catch(err => { console.error(err); process.exit(1); });
