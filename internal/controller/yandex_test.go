@@ -29,7 +29,21 @@ func yandexFixture(t *testing.T) (*fixture, *int, *string) {
 		if a[0] == "mwan3" && strings.Contains(strings.Join(a, " "), "/get-probes?") {
 			*calls++
 			stats, _ := json.Marshal(CurlStats{Code: 200, Bytes: float64(len(*body)), LocalIP: "192.0.2.1", RemoteIP: "192.0.2.99"})
-			return *body + "\n" + string(stats) + "\n", nil
+			stdoutBody := *body
+			for i, arg := range a {
+				if arg == "--output" && i+1 < len(a) {
+					info, err := os.Stat(a[i+1])
+					if err != nil || info.Mode().Perm() != 0600 {
+						t.Errorf("metadata file permissions: %v %v", info, err)
+					}
+					if err := os.WriteFile(a[i+1], []byte(*body), 0600); err != nil {
+						return "", err
+					}
+					stdoutBody = ""
+				}
+			}
+			prefix := "Running '" + strings.Join(a[3:], " ") + "' with DEVICE=eth2 SRCIP=192.0.2.1 FWMARK=0x3f00 FAMILY=ipv4\n"
+			return prefix + stdoutBody + "\n" + string(stats) + "\n", nil
 		}
 		return base(a, in)
 	}
@@ -96,7 +110,7 @@ func TestYandexDiscoveryCacheBudgetAndBindings(t *testing.T) {
 	for _, args := range x.runner.calls {
 		if args[0] == "mwan3" && strings.Contains(strings.Join(args, " "), "/get-probes?") {
 			line := strings.Join(args, " ")
-			for _, want := range []string{"mwan3 use a curl -q -4", "--interface eth2", "--max-time 8", "--max-filesize 65536", "--proto =https", "--resolve yandex.ru:443:192.0.2.99"} {
+			for _, want := range []string{"mwan3 use a curl -q -4", "--interface eth2", "--max-time 8", "--max-filesize 65536", "--proto =https", "--resolve yandex.ru:443:192.0.2.99", "--output "} {
 				if !strings.Contains(line, want) {
 					t.Fatal(line, want)
 				}
@@ -107,6 +121,10 @@ func TestYandexDiscoveryCacheBudgetAndBindings(t *testing.T) {
 				}
 			}
 		}
+	}
+	files, _ := filepath.Glob(filepath.Join(x.dir, ".yandex-metadata-*"))
+	if len(files) != 0 {
+		t.Fatal("metadata temp files leaked", files)
 	}
 	// A new process and generation retain the same source-bound cache.
 	a := *x.adapter
@@ -221,14 +239,14 @@ func TestYandexCalibrationDeferralAndAttemptBound(t *testing.T) {
 }
 
 func TestYandexRejectsUnboundAndOversizeResponses(t *testing.T) {
-	for _, kind := range []string{"route", "source", "destination", "generation", "oversize", "HTTP", "transport"} {
+	for _, kind := range []string{"route", "source", "destination", "generation", "oversize", "oversize-file", "missing-file", "HTTP", "transport"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			x, calls, body := yandexFixture(t)
 			s, _ := x.adapter.Discover(ctx)
 			b := Budgets{filepath.Join(x.dir, "budgets")}
 			base := x.runner.fn
-			if kind == "oversize" {
+			if kind == "oversize" || kind == "oversize-file" {
 				*body = strings.Repeat(" ", 65537) + yandexMetadata
 			}
 			x.runner.fn = func(args []string, in string) (string, error) {
@@ -238,6 +256,20 @@ func TestYandexRejectsUnboundAndOversizeResponses(t *testing.T) {
 				out, err := base(args, in)
 				if args[0] == "mwan3" {
 					switch kind {
+					case "oversize-file":
+						stats, parseErr := ParseCurl(out)
+						if parseErr != nil {
+							t.Fatal(parseErr)
+						}
+						stats.Bytes = 10
+						raw, _ := json.Marshal(stats)
+						out = "Running 'curl\n%{json}\n' with DEVICE=eth2\n" + string(raw) + "\n"
+					case "missing-file":
+						for i, arg := range args {
+							if arg == "--output" && i+1 < len(args) {
+								_ = os.Remove(args[i+1])
+							}
+						}
 					case "source":
 						out = strings.ReplaceAll(out, "192.0.2.1", "192.0.2.2")
 					case "destination":
@@ -259,6 +291,10 @@ func TestYandexRejectsUnboundAndOversizeResponses(t *testing.T) {
 			_ = ReadJSON(x.adapter.yandexCachePath(s.Channels[0]), &cache)
 			if cache.URL != "" {
 				t.Fatal(cache)
+			}
+			files, _ := filepath.Glob(filepath.Join(x.dir, ".yandex-metadata-*"))
+			if len(files) != 0 {
+				t.Fatal("metadata temp files leaked", files)
 			}
 			if kind == "route" && *calls != 0 {
 				t.Fatal("network before route validation")

@@ -14,6 +14,10 @@ Discovery SHALL bind to the WAN device/source, verify its route and generation, 
 - **WHEN** discovery returns malformed, oversized or unsafe target data
 - **THEN** it is rejected without a payload request to that target.
 
+#### Scenario: Native wrapper diagnostics
+- **WHEN** mwan3 emits diagnostic text alongside curl statistics
+- **THEN** the controller parses the API body separately, without treating diagnostic text as JSON, and removes private temporary body data after the attempt.
+
 ### Requirement: Independent cached targets
 The controller SHALL cache targets privately per WAN device/source, refresh after 24 hours or three target failures, and limit discovery attempts to once per ten minutes. A failed refresh SHALL retain a usable cached target. Offline channels and status polling SHALL NOT trigger discovery.
 

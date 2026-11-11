@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -163,6 +165,21 @@ func (a *Adapter) fetchYandexMetadata(ctx context.Context, s Snapshot, c Channel
 	if err != nil {
 		return "", err
 	}
+	// mwan3 prints the wrapped command (including write-out newlines) to
+	// stdout. Keep the response in a private file so diagnostics never become
+	// part of the JSON document and do not require heuristic prefix stripping.
+	if err = os.MkdirAll(a.Recovery.Dir, 0700); err != nil {
+		return "", err
+	}
+	bodyFile, err := os.CreateTemp(a.Recovery.Dir, ".yandex-metadata-*")
+	if err != nil {
+		return "", err
+	}
+	bodyPath := bodyFile.Name()
+	defer os.Remove(bodyPath)
+	if err = bodyFile.Close(); err != nil {
+		return "", err
+	}
 	if _, err = b.Reserve(metadataCtx, c.Interface, now, yandexMetadataLimit, s.Config.For(c.Interface).DailyBudget); err != nil {
 		return "", err
 	}
@@ -170,22 +187,16 @@ func (a *Adapter) fetchYandexMetadata(ctx context.Context, s Snapshot, c Channel
 	if err = started(); err != nil {
 		return "", err
 	}
-	args := []string{"mwan3", "use", c.Interface, "curl", "-q", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", "8", "--max-filesize", strconv.FormatInt(yandexMetadataLimit, 10), "--proto", "=https", "--proto-redir", "=https", "--resolve", host + ":" + port + ":" + remote.String(), "--write-out", "\n%{json}\n", "--url", target}
+	args := []string{"mwan3", "use", c.Interface, "curl", "-q", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", "8", "--max-filesize", strconv.FormatInt(yandexMetadataLimit, 10), "--proto", "=https", "--proto-redir", "=https", "--resolve", host + ":" + port + ":" + remote.String(), "--output", bodyPath, "--write-out", "\n%{json}\n", "--url", target}
 	out, runErr := a.Runner.Run(metadataCtx, args, "")
 	if runErr != nil {
 		return "", fmt.Errorf("Yandex discovery transfer failed: %w", runErr)
 	}
-	trimmed := strings.TrimSuffix(out, "\n")
-	i := strings.LastIndexByte(trimmed, '\n')
-	if i < 0 {
-		return "", errors.New("Yandex discovery missing curl statistics")
-	}
-	body := trimmed[:i]
-	stats, err := ParseCurl(trimmed[i+1:])
+	stats, err := ParseCurl(out)
 	if err != nil {
 		return "", err
 	}
-	if len(body) > int(yandexMetadataLimit) || stats.Bytes > float64(yandexMetadataLimit) || stats.Bytes < 0 || math.IsNaN(stats.Bytes) || math.IsInf(stats.Bytes, 0) {
+	if stats.Bytes > float64(yandexMetadataLimit) || stats.Bytes < 0 || math.IsNaN(stats.Bytes) || math.IsInf(stats.Bytes, 0) {
 		return "", errors.New("Yandex discovery exceeds response limit")
 	}
 	if stats.Code != 200 {
@@ -198,5 +209,14 @@ func (a *Adapter) fetchYandexMetadata(ctx context.Context, s Snapshot, c Channel
 	if err != nil || fresh.Generation != s.Generation {
 		return "", errors.New("Yandex discovery discarded: topology/source generation changed")
 	}
-	return parseYandexMetadata([]byte(body))
+	bodyFile, err = os.Open(bodyPath)
+	if err != nil {
+		return "", err
+	}
+	defer bodyFile.Close()
+	body, err := io.ReadAll(io.LimitReader(bodyFile, yandexMetadataLimit+1))
+	if err != nil {
+		return "", err
+	}
+	return parseYandexMetadata(body)
 }
