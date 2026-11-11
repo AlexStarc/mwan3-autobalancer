@@ -13,7 +13,7 @@
 - [x] Add `ProbeProvider` parsing/validation in `internal/controller/config.go`, default `url`; allow Yandex measurements without a manual URL.
 - [x] Add `internal/controller/yandex.go` and tests: bounded source-bound metadata request to `https://yandex.ru/internet/api/v0/get-probes`, strict HTTPS Yandex CDN download target validation, per-WAN private persistent runtime cache, TTL/failure refresh/cooldown and malformed metadata handling.
 - [x] Integrate in `probe.go` and `engine.go`: account metadata budget, preserve route/source/generation checks and payload limits; count target failures only; preserve sample history across discovery refresh. A discovery cooldown must defer the next attempt without consuming calibration attempts; extend the calibration deadline to permit the scheduled retry, while bounding actual failed network attempts to the existing five-attempt limit. Cover recovery in on-change mode and legacy URL behavior.
-- [ ] Run focused Go tests, then full tests/race/vet with supported local toolchains.
+- [x] Run focused Go tests, then full tests/race/vet with supported local toolchains.
 
 ## Task 2: Minimal UI, configuration and documentation
 
@@ -23,8 +23,12 @@
 
 ## Task 3: Review, release and router validation
 
-- [ ] Independent spec compliance review, then code quality review; resolve findings and rerun relevant checks.
-- [ ] Publish branch/PR; require exact-head CI including actual OpenWrt SDK package build before merge/release.
-- [ ] Stage verified previous packages and configuration backup; show concrete rollback/removal commands before installing or testing on router.
-- [ ] Install verified new packages, enable Yandex provider retaining manual URL and all other settings; read state back and run bounded native probes on all online channels.
-- [ ] Verify per-WAN cache, accepted samples, watchdog readiness and unchanged routing configuration; publish release and record actual results.
+- [x] Independent spec compliance review, then code quality review; resolve findings and rerun relevant checks.
+- [x] Publish branch/PR; require exact-head CI including actual OpenWrt SDK package build before merge/release.
+- [x] Stage verified previous packages and configuration backup; show concrete rollback/removal commands before installing or testing on router.
+- [x] Install verified new packages, enable Yandex provider retaining manual URL and all other settings; read state back and run bounded native probes on all online channels.
+- [x] Verify per-WAN cache, accepted samples, watchdog readiness and unchanged routing configuration; publish release and record actual results.
+
+## Verified outcome
+
+Released v0.1.5 from exact-head SDK CI 42970783284 and installed both0.1.5-r1 packages. Automatic discovery/cached bounded downloads confirmed on all three WANs. Stable simultaneous calibration remains unverified due to frequent pre-existing Petra USB disconnects; see docs/DEVICE-VALIDATION-0.1.5.ru.md. No routing configuration or quota limits were changed.
