@@ -149,7 +149,7 @@ return view.extend({
 	},
 	render: function(data) {
 		this.report = data[0]; this.actionBusy = false;
-		var m = this.map = new form.Map('mwan3_autobalancer', _('Autobalancing'), _('Set the URL and limits, then run a test measurement. Installation uses observe mode and does not start downloads with an empty URL.'));
+		var m = this.map = new form.Map('mwan3_autobalancer', _('Autobalancing'), _('Choose a measurement source and limits, then run a test measurement. Installation uses observe mode with manual URL measurements disabled.'));
 		var s = m.section(form.NamedSection, 'main', 'main', _('Settings')); s.addremove = false;
 		var o = s.option(form.Flag, 'enabled', _('Enabled')); o.rmempty = false;
 		o = this.modeOption = s.option(form.ListValue, 'mode', _('Mode'));
@@ -162,7 +162,9 @@ return view.extend({
 			if (!/^[A-Za-z0-9_][A-Za-z0-9_-]{0,14}$/.test(value)) return _('Invalid policy');
 			return this.report.lease_active && value !== this.report.policy ? _('Restore the previous policy using the button below first') : true;
 		}.bind(this);
-		o = s.option(form.Value, 'probe_url', _('Test download URL'), _('HTTP(S), without credentials or a fragment. {bytes} in the path or query sets the size for a bounded retry. An empty field disables measurements.'));
+		o = s.option(form.ListValue, 'probe_provider', _('Measurement source'), _('Yandex selects a server separately for each WAN. Addresses are cached for 24 hours and refreshed after repeated download failures; discovery uses the same daily budget.'));
+		o.value('url', _('Manual URL')); o.value('yandex', _('Yandex (automatic server selection)')); o.default = 'url'; o.rmempty = false;
+		o = s.option(form.Value, 'probe_url', _('Test download URL'), _('Used only with Manual URL. HTTP(S), without credentials or a fragment. {bytes} sets the size for a bounded retry. An empty field disables manual measurements.'));
 		o.validate = function(section, value) {
 			if (!value) return true;
 			try { var url = new URL(value); return /^https?:$/.test(url.protocol) && !url.username && !url.password && !url.hash && !/[\r\n\x00]/.test(value) && !url.host.includes('{bytes}') ? true : _('Invalid HTTP(S) URL'); }

@@ -90,7 +90,14 @@ func (e *Engine) init() {
 	}
 }
 func channelEpoch(s Snapshot, c Channel) string {
+	target := s.Config.URL
+	provider := ""
+	if s.Config.ProbeProvider == "yandex" {
+		target = ""
+		provider = "yandex"
+	}
 	b, _ := json.Marshal(struct {
+		Provider                                string `json:",omitempty"`
 		Policy, URL                             string
 		ProbeBytes, MaxProbeBytes, MinimumBytes int64
 		Timeout                                 time.Duration
@@ -100,7 +107,7 @@ func channelEpoch(s Snapshot, c Channel) string {
 		Online                                  bool
 		Mask                                    uint32
 		ID                                      int
-	}{s.Config.Policy, s.Config.URL, s.Config.For(c.Interface).Bytes, s.Config.MaxProbeBytes, s.Config.MinimumBytes, s.Config.Timeout, s.Config.MinimumSeconds, s.Config.Alpha, c.Member, c.Interface, c.Device, c.SourceIP, c.Metric, c.BaselineWeight, c.Online, s.Mask, c.ID})
+	}{provider, s.Config.Policy, target, s.Config.For(c.Interface).Bytes, s.Config.MaxProbeBytes, s.Config.MinimumBytes, s.Config.Timeout, s.Config.MinimumSeconds, s.Config.Alpha, c.Member, c.Interface, c.Device, c.SourceIP, c.Metric, c.BaselineWeight, c.Online, s.Mask, c.ID})
 	return string(b)
 }
 func CalibrationWindow(s Snapshot) time.Duration {
@@ -218,7 +225,7 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 		}
 		c.BudgetLimitBytes = s.Config.For(c.Interface).DailyBudget
 		c.Phase = "holding"
-		if !s.Config.Enabled || s.Config.URL == "" {
+		if !s.Config.Enabled || !s.Config.HasProbeTarget() {
 			c.Phase = "disabled"
 		} else if !c.Online {
 			c.Phase = "holding"
@@ -230,7 +237,7 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 			c.Phase = "maintenance"
 		}
 		pendingCalibration := !schedule.Complete && schedule.Attempts < 5 && !now.After(schedule.CalibrationUntil)
-		if s.Config.Enabled && s.Config.URL != "" && c.Online && (s.Config.ScheduleMode == "hybrid" || pendingCalibration) {
+		if s.Config.Enabled && s.Config.HasProbeTarget() && c.Online && (s.Config.ScheduleMode == "hybrid" || pendingCalibration) {
 			next := schedule.Next
 			if !schedule.Complete && (schedule.Attempts >= 5 || now.After(schedule.CalibrationUntil)) {
 				next = now.Add(s.Config.For(c.Interface).Interval)
@@ -247,7 +254,7 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 		}
 	}
 	r.Phase = "holding"
-	if !s.Config.Enabled || s.Config.URL == "" {
+	if !s.Config.Enabled || !s.Config.HasProbeTarget() {
 		r.Phase = "disabled"
 	} else {
 		channelError := false
@@ -302,7 +309,7 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		return err
 	}
 	now := e.Now()
-	if s.Config.URL == "" {
+	if !s.Config.HasProbeTarget() {
 		e.mu.Lock()
 		e.state.LastError = "set probe_url to enable active measurement"
 		e.makeReport(s, now)
@@ -341,8 +348,19 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		speed, probeErr := e.Adapter.Probe(ctx, s, c, e.Budgets, e.Now())
 		e.mu.Lock()
 		sc = e.state.Schedule[c.Interface]
-		sc.Attempts++
-		sc.Next = e.Now().Add(s.Config.CalibrationInterval)
+		var deferred *ProbeDeferredError
+		if errors.As(probeErr, &deferred) {
+			sc.Next = deferred.Until
+			// Cooldown is scheduling, not a failed network attempt. Keep the
+			// calibration window open through its deferred retry in on-change mode.
+			if !sc.Complete && sc.CalibrationUntil.Before(sc.Next.Add(s.Config.CalibrationInterval)) {
+				sc.CalibrationUntil = sc.Next.Add(s.Config.CalibrationInterval)
+				sc.WindowSeconds = int64(sc.CalibrationUntil.Sub(sc.SettleUntil.Add(-s.Config.Settle)) / time.Second)
+			}
+		} else {
+			sc.Attempts++
+			sc.Next = e.Now().Add(s.Config.CalibrationInterval)
+		}
 		if probeErr != nil {
 			e.state.ProbeErrors[c.Interface] = probeErr.Error()
 			e.state.ProbeStates[c.Interface] = "failed"
@@ -358,7 +376,7 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 				sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
 			}
 		}
-		if sc.Complete {
+		if sc.Complete && deferred == nil {
 			sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
 		}
 		e.state.Schedule[c.Interface] = sc
@@ -510,7 +528,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if s.Config.Enabled && s.Config.URL != "" {
+	if s.Config.Enabled && s.Config.HasProbeTarget() {
 		if err = e.Cycle(ctx, false, s.Config.Mode == "automatic"); err != nil {
 			return err
 		}

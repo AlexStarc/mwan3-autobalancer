@@ -123,6 +123,9 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	header.position = 'fixed'; page.headerSpacing();
 	const option = (id, name) => page.map.lookupOption(name, id)[0];
 	assert.equal(page.map.title, _('Autobalancing'));
+	assert.equal(option('main', 'probe_provider').label, _('Measurement source'));
+	assert.equal(option('main', 'probe_provider').default, 'url');
+	assert.deepEqual(option('main', 'probe_provider').values, { url: _('Manual URL'), yandex: _('Yandex (automatic server selection)') });
 	assert.equal(option('main', 'probe_url').label, _('Test download URL'));
 	assert.equal(option('main', 'interval_seconds').label, _('Interval, hours'));
 	assert.equal(option('main', 'probe_bytes').label, _('%s, MiB').format(_('Size of one measurement')));
@@ -130,7 +133,7 @@ const page = new Function('view', 'rpc', 'form', 'uci', 'poll', 'ui', 'dom', 'E'
 	assert.match(option('main', 'mode').validate('main', 'automatic'), /watchdog missing/);
 	assert.equal(option('main', 'mode').validate('main', 'observe'), true);
 	const modeOption = option('main', 'mode'), widget = modeOption.getUIElement('main');
-	const pending = { mode: 'automatic', probe_url: 'https://example.test/unsaved', interval_seconds: '9', daily_budget_bytes: '768' };
+	const pending = { mode: 'automatic', probe_provider: 'yandex', probe_url: 'https://example.test/unsaved', interval_seconds: '9', daily_budget_bytes: '768' };
 	Object.entries(pending).forEach(([name, value]) => { option('main', name).input.main = value; });
 	const configBefore = JSON.stringify(sections), activityBefore = { ...activity }, mapBefore = page.map;
 	const missingReason = 'watchdog readiness: open /var/run/mwan3-autobalancer/watchdog.ready: no such file or directory';

@@ -104,8 +104,8 @@ msgstr "Укажите от 1 минуты до 168 часов с точност
 msgid "Error"
 msgstr "Ошибка"
 
-msgid "HTTP(S), without credentials or a fragment. {bytes} in the path or query sets the size for a bounded retry. An empty field disables measurements."
-msgstr "HTTP(S), без логина и фрагмента. {bytes} в пути или запросе задаёт размер для ограниченного повторного замера. Пустое поле выключает замеры."
+msgid "Used only with Manual URL. HTTP(S), without credentials or a fragment. {bytes} sets the size for a bounded retry. An empty field disables manual measurements."
+msgstr "Используется только в режиме «Ручной URL». HTTP(S), без логина и фрагмента. {bytes} задаёт размер для ограниченного повторного замера. Пустое поле выключает ручные замеры."
 
 msgid "Holding shares"
 msgstr "Удержание долей"
@@ -188,8 +188,8 @@ msgstr "Сначала восстановите предыдущую полит�
 msgid "Schedule"
 msgstr "Расписание"
 
-msgid "Set the URL and limits, then run a test measurement. Installation uses observe mode and does not start downloads with an empty URL."
-msgstr "Настройте URL и лимиты, затем выполните пробный замер. Установка работает в режиме наблюдения и не запускает загрузки с пустым URL."
+msgid "Choose a measurement source and limits, then run a test measurement. Installation uses observe mode with manual URL measurements disabled."
+msgstr "Выберите источник замеров и лимиты, затем выполните пробный замер. После установки включён режим наблюдения, замеры по ручному URL выключены."
 
 msgid "Settings"
 msgstr "Настройки"
@@ -235,3 +235,15 @@ msgstr "ожидание проверки"
 
 msgid "mwan3 policy"
 msgstr "Политика mwan3"
+
+msgid "Measurement source"
+msgstr "Источник замеров"
+
+msgid "Manual URL"
+msgstr "Ручной URL"
+
+msgid "Yandex (automatic server selection)"
+msgstr "Яндекс (автоматический выбор сервера)"
+
+msgid "Yandex selects a server separately for each WAN. Addresses are cached for 24 hours and refreshed after repeated download failures; discovery uses the same daily budget."
+msgstr "Яндекс выбирает сервер отдельно для каждого WAN. Адреса кешируются на 24 часа и обновляются после повторных ошибок загрузки; получение адресов входит в тот же суточный резерв."

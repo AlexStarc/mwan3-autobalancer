@@ -30,10 +30,11 @@ type Snapshot struct {
 	LiveSave           string
 }
 type Adapter struct {
-	Runner   Runner
-	ReadFile func(string) ([]byte, error)
-	LockPath string
-	Recovery Recovery
+	Runner     Runner
+	LookupIPv4 func(context.Context, string) ([]net.IP, error)
+	ReadFile   func(string) ([]byte, error)
+	LockPath   string
+	Recovery   Recovery
 }
 
 func (a *Adapter) uci(ctx context.Context, name string) (UCI, error) {
