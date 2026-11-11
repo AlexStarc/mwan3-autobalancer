@@ -57,11 +57,12 @@ type ProbeConfig struct {
 	DailyBudget int64
 }
 type Config struct {
-	Enabled      bool
-	Mode         string
-	Policy       string
-	URL          string
-	ScheduleMode string
+	Enabled       bool
+	Mode          string
+	Policy        string
+	URL           string
+	ProbeProvider string
+	ScheduleMode  string
 	ProbeConfig
 	Timeout                  time.Duration
 	MinimumSeconds           float64
@@ -78,7 +79,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Mode: "observe", Policy: "balanced", ScheduleMode: "hybrid", ProbeConfig: ProbeConfig{6 * time.Hour, 33554432, 268435456}, Timeout: 15 * time.Second, MinimumSeconds: 2, MinimumBytes: 262144, Alpha: .25, MaxAge: 24 * time.Hour, Hysteresis: 5, MinimumApply: time.Minute, CalibrationInterval: 120 * time.Second, CalibrationMinimumWindow: 600 * time.Second, Settle: 60 * time.Second, MaxProbeBytes: 134217728, WAN: map[string]ProbeConfig{}}
+	return Config{ProbeProvider: "url", Mode: "observe", Policy: "balanced", ScheduleMode: "hybrid", ProbeConfig: ProbeConfig{6 * time.Hour, 33554432, 268435456}, Timeout: 15 * time.Second, MinimumSeconds: 2, MinimumBytes: 262144, Alpha: .25, MaxAge: 24 * time.Hour, Hysteresis: 5, MinimumApply: time.Minute, CalibrationInterval: 120 * time.Second, CalibrationMinimumWindow: 600 * time.Second, Settle: 60 * time.Second, MaxProbeBytes: 134217728, WAN: map[string]ProbeConfig{}}
 }
 func ParseConfig(u UCI) (Config, error) {
 	c := DefaultConfig()
@@ -101,6 +102,12 @@ func ParseConfig(u UCI) (Config, error) {
 	}
 	if !identifier(c.Policy) || len(c.Policy) > 15 {
 		return c, errors.New("invalid policy name")
+	}
+	if v := main.Text("probe_provider"); v != "" {
+		c.ProbeProvider = v
+	}
+	if c.ProbeProvider != "url" && c.ProbeProvider != "yandex" {
+		return c, errors.New("probe_provider must be url or yandex")
 	}
 	c.URL = main.Text("probe_url")
 	if err := ValidateURL(c.URL); err != nil {
@@ -257,3 +264,5 @@ func DecodeUCI(s string) (UCI, error) {
 	}
 	return u, err
 }
+
+func (c Config) HasProbeTarget() bool { return c.ProbeProvider == "yandex" || c.URL != "" }

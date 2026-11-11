@@ -33,12 +33,23 @@ The tested integration target is OpenWrt 24.10.8, mwan3 2.11.16 and the IPv4 ipt
 - Discover any supported number of WAN members from a selected mwan3 policy.
 - Measure per-WAN throughput with explicit time, payload and persistent budget limits.
 - Preserve curl transport errors when a measurement fails, including transfers without an HTTP response.
+- Optionally discover Yandex CDN download servers separately through each WAN, with cached addresses and automatic refresh after target failures.
 - Smooth valid measurements and calculate proportional weights, retaining configured priorities and safe behavior when measurements are missing or stale.
 - Update only the selected runtime policy without restarting mwan3 or flushing conntrack.
 - Provide one LuCI page for WAN status, measured speeds, proposed/applied shares, probe budgets and essential settings.
 - Start in observation mode, with automatic policy changes disabled until the adapter and integration tests pass.
 
 This is connection-based load balancing. It does not combine several WANs within one TCP stream.
+
+## Measurement source
+
+Choose **Yandex (automatic server selection)** in LuCI to obtain download addresses from Yandex Internetometer through each online WAN. Yandex describes its server selection in its [measurement methodology](https://yandex.ru/support2/internet/en/methodology). A manual download URL is not required in this mode. **Manual URL** remains the default for existing and new installations; an empty manual URL disables measurements in that mode.
+
+Yandex addresses are cached privately in `/var/run/mwan3-autobalancer` for each WAN device/source address. The controller refreshes them after 24 hours or three download transport/HTTP failures. Discovery attempts are at least ten minutes apart. If refresh fails, an existing valid cached address remains usable. Changing a discovered address does not erase speed history. Status polling does not trigger discovery or downloads.
+
+Discovery reserves at most 64 KiB from the same persistent per-WAN daily allowance before making its bounded HTTPS request. Payload measurements retain the configured byte/time limits and confidence requirements. The returned 50 MiB file can be too short for a confident measurement on a very fast link; such samples remain rejected.
+
+The Internetometer API is undocumented and can change. Automatic discovery handles CDN URL changes while the API remains compatible; it does not repair USB disconnects, operator outages or changes to the API contract. Manual URL mode remains available as a fallback.
 
 ## Documents
 

@@ -44,7 +44,7 @@ fixture:
                 self.assertIn('SOURCE=' + str(ROOT), result.stdout)
                 self.assertNotIn(str(sdk / 'openwrt'), result.stdout)
                 if name == 'mwan3-autobalancer':
-                    self.assertIn('VERSION=0.1.4-r1', result.stdout)
+                    self.assertIn('VERSION=0.1.5-r1', result.stdout)
                     self.assertIn('CGO_ENABLED=0', result.stdout)
                     self.assertNotIn('CGO_ENABLED=1', result.stdout)
                     self.assertIn('-linkmode internal', result.stdout)
@@ -58,7 +58,7 @@ fixture:
                 else:
                     for component in ['view/network/mwan3-autobalancer.js', 'menu.d/luci-app-mwan3-autobalancer.json', 'acl.d/luci-app-mwan3-autobalancer.json']:
                         self.assertIn(str(ROOT / 'openwrt/luci' / component), result.stdout)
-                    self.assertIn('VERSION=0.1.3-r1', result.stdout)
+                    self.assertIn('VERSION=0.1.5-r1', result.stdout)
                     self.assertIn('BUILD_DEPENDS=luci-base/host', result.stdout)
                     self.assertIn(str(sdk / 'staging/hostpkg/bin/po2lmo'), result.stdout)
                     self.assertIn(str(ROOT / 'openwrt/luci/po/ru/mwan3-autobalancer.po'), result.stdout)
@@ -87,7 +87,7 @@ fixture:
             compiler.chmod(0o755)
             result = subprocess.run(['make', '-f', str(ROOT / 'package/luci-app-mwan3-autobalancer/Makefile'), 'TOPDIR=' + str(sdk), 'fixture'], cwd=sdk, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            output = sdk / 'build/luci-app-mwan3-autobalancer-0.1.3/mwan3-autobalancer.ru.lmo'
+            output = sdk / 'build/luci-app-mwan3-autobalancer-0.1.5/mwan3-autobalancer.ru.lmo'
             self.assertTrue(output.is_file())
             self.assertEqual((sdk / 'compile.log').read_text().splitlines(), [str(ROOT / 'openwrt/luci/po/ru/mwan3-autobalancer.po'), str(output)])
 
@@ -120,6 +120,7 @@ uci() {
         self.assertEqual(acl['write']['uci'], ['mwan3_autobalancer'])
         config = (ROOT / 'openwrt/config/mwan3_autobalancer').read_text()
         self.assertIn("option mode 'observe'", config)
+        self.assertIn("option probe_provider 'url'", config)
         self.assertIn("option probe_url ''", config)
         self.assertIn("option daily_budget_bytes '268435456'", config)
         self.assertEqual(json.loads((ROOT / 'openwrt/config/budgets').read_text()), {})
