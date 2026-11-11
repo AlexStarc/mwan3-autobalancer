@@ -47,6 +47,8 @@ Choose **Yandex (automatic server selection)** in LuCI to obtain download addres
 
 Yandex addresses are cached privately in `/var/run/mwan3-autobalancer` for each WAN device/source address. The controller refreshes them after 24 hours or three download transport/HTTP failures. Discovery attempts are at least ten minutes apart. If refresh fails, an existing valid cached address remains usable. Changing a discovered address does not erase speed history. Status polling does not trigger discovery or downloads.
 
+The controller prefers the validated service `fallbackUrl` supplied by the API: native router checks found dedicated `cloudcdn-*` test hosts unreachable on a mobile WAN while the service fallback supported bounded downloads. If no valid fallback is supplied, a validated primary download URL can be used. The address is obtained from the API rather than hardcoded.
+
 Discovery reserves at most 64 KiB from the same persistent per-WAN daily allowance before making its bounded HTTPS request. Payload measurements retain the configured byte/time limits and confidence requirements. The returned 50 MiB file can be too short for a confident measurement on a very fast link; such samples remain rejected.
 
 The Internetometer API is undocumented and can change. Automatic discovery handles CDN URL changes while the API remains compatible; it does not repair USB disconnects, operator outages or changes to the API contract. Manual URL mode remains available as a fallback.

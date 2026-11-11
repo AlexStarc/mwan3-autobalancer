@@ -96,7 +96,7 @@ func parseYandexMetadata(body []byte) (string, error) {
 		if len(probe.Timeout) > 0 {
 			continue
 		}
-		for _, raw := range []string{probe.URL, probe.FallbackURL} {
+		for _, raw := range []string{probe.FallbackURL, probe.URL} {
 			if validYandexURL(raw) {
 				return raw, nil
 			}

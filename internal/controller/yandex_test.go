@@ -445,3 +445,17 @@ func TestLegacyURLEpochRetainsPersistedSamples(t *testing.T) {
 		t.Fatal("provider switch retained incompatible history")
 	}
 }
+
+func TestYandexPrefersTrustedAPIFallback(t *testing.T) {
+	fallback := "https://fallback.svc.cdn.yandex.net/probes/50mb?mid=example"
+	for _, tc := range []struct{ fallback, want string }{
+		{fallback, fallback},
+		{"https://untrusted.example/probes/50mb", yandexTarget},
+		{"", yandexTarget},
+	} {
+		body, _ := json.Marshal(map[string]any{"download": map[string]any{"probes": []any{map[string]any{"url": yandexTarget, "fallbackUrl": tc.fallback}}}})
+		if got, err := parseYandexMetadata(body); err != nil || got != tc.want {
+			t.Fatal(got, tc.want, err)
+		}
+	}
+}

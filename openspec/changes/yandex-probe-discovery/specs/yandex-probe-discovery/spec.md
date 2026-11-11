@@ -18,6 +18,10 @@ Discovery SHALL bind to the WAN device/source, verify its route and generation, 
 - **WHEN** mwan3 emits diagnostic text alongside curl statistics
 - **THEN** the controller parses the API body separately, without treating diagnostic text as JSON, and removes private temporary body data after the attempt.
 
+#### Scenario: API supplies a service fallback
+- **WHEN** a large download probe supplies a valid service fallback URL
+- **THEN** the controller prefers it over the dedicated test-node URL, and can use a validated primary URL when no valid fallback is supplied.
+
 ### Requirement: Independent cached targets
 The controller SHALL cache targets privately per WAN device/source, refresh after 24 hours or three target failures, and limit discovery attempts to once per ten minutes. A failed refresh SHALL retain a usable cached target. Offline channels and status polling SHALL NOT trigger discovery.
 
