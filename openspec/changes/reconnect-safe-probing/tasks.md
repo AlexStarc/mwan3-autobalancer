@@ -7,3 +7,5 @@
 - [x] Run full Go, race, vet, syntax and relevant fixtures; self-review.
 
 - [x] Fix review finding: publish measurement reservation atomically after successful persistence; verify refusal preserves counters/deadlines and repair permits the original first automatic measurement.
+
+- [x] Fix review finding: allow five calibration attempts after reconnect with an inherited capped failure streak; reserve four maximum backoff gaps in the finite window.

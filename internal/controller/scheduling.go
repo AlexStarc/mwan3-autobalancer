@@ -50,11 +50,10 @@ func CalibrationWindow(s Snapshot) time.Duration {
 			online++
 		}
 	}
-	// Five bounded attempts must fit even with four consecutive failure delays.
+	// Reconnects retain the failure streak: all four gaps may already be at
+	// the cap. The initial wait for the retained throttle is added by refresh.
 	window := settleDuration(s.Config) + time.Duration(2*calibrationAttempts*online)*s.Config.Timeout + time.Minute
-	for failure := 1; failure < calibrationAttempts; failure++ {
-		window += max(calibrationInterval(s.Config), failureBackoff(failure))
-	}
+	window += time.Duration(calibrationAttempts-1) * max(calibrationInterval(s.Config), maximumFailureBackoff)
 	return max(window, s.Config.CalibrationMinimumWindow)
 }
 func extendCalibration(sc *Schedule, until time.Time, c Config) {

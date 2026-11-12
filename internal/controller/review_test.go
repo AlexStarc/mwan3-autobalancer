@@ -269,7 +269,7 @@ func TestScheduleKnobsAndLockedModePause(t *testing.T) {
 	m["calibration_window_seconds"] = "1200"
 	m["settle_seconds"] = "30"
 	s, err := x.adapter.Discover(ctx)
-	if err != nil || s.Config.CalibrationInterval != 4*time.Minute || s.Config.Settle != 30*time.Second || CalibrationWindow(s) != 176*time.Minute {
+	if err != nil || s.Config.CalibrationInterval != 4*time.Minute || s.Config.Settle != 30*time.Second || CalibrationWindow(s) != 251*time.Minute {
 		t.Fatal(s.Config, err)
 	}
 	e := makeEngine(t, x)

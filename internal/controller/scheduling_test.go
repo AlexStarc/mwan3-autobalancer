@@ -393,3 +393,37 @@ func TestOfflineRoutingReconcilesDuringProbeSettling(t *testing.T) {
 		t.Fatal("settling delayed offline exclusion", e.state.Weights)
 	}
 }
+
+func TestReconnectCalibrationFitsInheritedFailureBackoff(t *testing.T) {
+	x := makeFixture(t)
+	x.cfg.Values["main"]["schedule_mode"] = "on-change"
+	x.curlErr = errors.New("persistent transfer failure")
+	e := makeEngine(t, x)
+	start := x.now
+	tickAt(t, e, x, start)
+	for _, minute := range []int{5, 20, 50} {
+		tickAt(t, e, x, start.Add(time.Duration(minute)*time.Minute))
+	}
+	if e.state.ProbeThrottle["a"].Failures != 3 {
+		t.Fatal("failed to establish capped inherited streak")
+	}
+	x.uci.Values["a"]["enabled"] = "0"
+	tickAt(t, e, x, start.Add(51*time.Minute))
+	x.uci.Values["a"]["enabled"] = "1"
+	tickAt(t, e, x, start.Add(52*time.Minute))
+	for attempt, minute := range []int{110, 170, 230, 290, 350} {
+		tickAt(t, e, x, start.Add(time.Duration(minute)*time.Minute))
+		if got := e.state.Schedule["a"].Attempts; got != attempt+1 {
+			t.Fatalf("inherited failure backoff prematurely exhausted calibration at minute %d: %+v", minute, e.state.Schedule["a"])
+		}
+	}
+	tickAt(t, e, x, x.now.Add(20*time.Second))
+	if !e.state.Schedule["a"].Complete || e.state.Schedule["a"].Attempts != 5 {
+		t.Fatal("reconnected calibration no longer finite", e.state.Schedule["a"])
+	}
+	for _, channel := range e.Report().Channels {
+		if channel.Interface == "a" && channel.NextProbeAt != nil {
+			t.Fatal("on-change retried exhausted reconnected calibration")
+		}
+	}
+}
