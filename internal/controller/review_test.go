@@ -269,12 +269,12 @@ func TestScheduleKnobsAndLockedModePause(t *testing.T) {
 	m["calibration_window_seconds"] = "1200"
 	m["settle_seconds"] = "30"
 	s, err := x.adapter.Discover(ctx)
-	if err != nil || s.Config.CalibrationInterval != 4*time.Minute || s.Config.Settle != 30*time.Second || CalibrationWindow(s) != 20*time.Minute {
+	if err != nil || s.Config.CalibrationInterval != 4*time.Minute || s.Config.Settle != 30*time.Second || CalibrationWindow(s) != 251*time.Minute {
 		t.Fatal(s.Config, err)
 	}
 	e := makeEngine(t, x)
 	_, err = e.refresh(ctx)
-	if err != nil || e.state.Schedule["a"].SettleUntil != x.now.Add(30*time.Second) {
+	if err != nil || e.state.Schedule["a"].SettleUntil != x.now.Add(5*time.Minute) {
 		t.Fatal(e.state.Schedule, err)
 	}
 	m["mode"] = "automatic"
@@ -307,7 +307,7 @@ func TestPauseDuringProbeDoesNotApplyCapturedAutomaticMode(t *testing.T) {
 	e := makeEngine(t, x)
 	ctx := context.Background()
 	_, _ = e.refresh(ctx)
-	x.now = x.now.Add(time.Minute)
+	x.now = x.now.Add(5 * time.Minute)
 	base := x.runner.fn
 	x.runner.fn = func(a []string, in string) (string, error) {
 		out, err := base(a, in)

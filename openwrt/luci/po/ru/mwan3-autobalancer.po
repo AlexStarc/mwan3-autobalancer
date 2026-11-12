@@ -247,3 +247,6 @@ msgstr "Яндекс (автоматический выбор сервера)"
 
 msgid "Yandex selects a server separately for each WAN. Addresses are cached for 24 hours and refreshed after repeated download failures; discovery uses the same daily budget."
 msgstr "Яндекс выбирает сервер отдельно для каждого WAN. Адреса кешируются на 24 часа и обновляются после повторных ошибок загрузки; получение адресов входит в тот же суточный резерв."
+
+msgid "Automatic measurements wait at least 5 online minutes and 15 minutes between attempts. Measure bypasses these waits, keeps quota limits, and updates the automatic retry schedule."
+msgstr "Автоматические замеры ждут не менее 5 минут online и 15 минут между попытками. Кнопка «Измерить» обходит эти паузы, сохраняет лимиты квоты и обновляет расписание автоматических повторов."

@@ -130,6 +130,11 @@ func (a *Adapter) yandexURL(ctx context.Context, s Snapshot, c Channel, b Budget
 		if usable {
 			return cache.URL, nil
 		}
+		// Report the persisted discovery guard immediately, including the
+		// failed request that established it, without losing its diagnostic.
+		if !cache.Attempted.IsZero() && now.Before(cache.Attempted.Add(yandexRefreshCooldown)) {
+			return "", errors.Join(err, &ProbeDeferredError{cache.Attempted.Add(yandexRefreshCooldown)})
+		}
 		return "", err
 	}
 	cache.URL = target

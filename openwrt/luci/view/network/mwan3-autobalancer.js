@@ -120,6 +120,7 @@ return view.extend({
 			E('p', {}, r.apply_ready ? _('Automatic application is available.') : _('Automatic application unavailable: %s').format(r.apply_unavailable_reason || r.compatibility_error || r.error || _('Waiting for checks'))),
 			r.last_error ? E('p', { 'class': 'alert-message warning' }, r.last_error) : '',
 			E('div', { 'class': 'mwan3-ab-table-wrap' }, table),
+			E('p', {}, _('Automatic measurements wait at least 5 online minutes and 15 minutes between attempts. Measure bypasses these waits, keeps quota limits, and updates the automatic retry schedule.')),
 			E('p', {}, _('Speed is estimated from completed test downloads. The reservation includes planned data; it is not a counter of actual traffic. The limit applies separately to each WAN, per UTC day.'))
 		]);
 		this.probeButton.disabled = !!r.error || !!r.busy || this.actionBusy;

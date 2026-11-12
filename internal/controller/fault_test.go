@@ -15,14 +15,14 @@ func TestScaledCalibrationWindow(t *testing.T) {
 	for i := range s.Channels {
 		s.Channels[i].Online = true
 	}
-	if CalibrationWindow(s) != 10*time.Minute {
+	if CalibrationWindow(s) != 253*time.Minute+30*time.Second {
 		t.Fatal(CalibrationWindow(s))
 	}
 	s.Channels = make([]Channel, 60)
 	for i := range s.Channels {
 		s.Channels[i].Online = true
 	}
-	if CalibrationWindow(s) != 34*time.Minute {
+	if CalibrationWindow(s) != 396*time.Minute {
 		t.Fatal(CalibrationWindow(s))
 	}
 }

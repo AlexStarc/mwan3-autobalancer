@@ -23,14 +23,14 @@ func TestCalibrationAndMaintenance(t *testing.T) {
 	if x.runner.count("mwan3") != 0 {
 		t.Fatal("no settle")
 	}
-	x.now = x.now.Add(time.Minute)
+	x.now = x.now.Add(5 * time.Minute)
 	if err := e.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if x.runner.count("mwan3") != 2 {
 		t.Fatal("initial sample missing")
 	}
-	x.now = x.now.Add(2 * time.Minute)
+	x.now = x.now.Add(15 * time.Minute)
 	if err := e.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -76,15 +76,27 @@ func TestCalibrationFiniteFailures(t *testing.T) {
 	e := makeEngine(t, x)
 	ctx := context.Background()
 	_ = e.Tick(ctx)
-	for i := 0; i < 10; i++ {
-		x.now = x.now.Add(2 * time.Minute)
+	x.now = x.now.Add(5 * time.Minute)
+	for _, delay := range []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, time.Hour} {
 		_ = e.Tick(ctx)
+		x.now = x.now.Add(delay)
 	}
+	_ = e.Tick(ctx)
+	x.now = x.now.Add(20 * time.Second)
+	_ = e.Tick(ctx)
 	if n := x.runner.count("mwan3"); n != 10 {
 		t.Fatal("calibration was not bounded to five attempts per channel", n)
 	}
 	if !e.state.Schedule["a"].Complete {
 		t.Fatal("missing exhausted epoch")
+	}
+	if !nextFor(t, e, "a").Equal(x.now.Add(6 * time.Hour)) {
+		t.Fatal("exhausted hybrid calibration did not return to maintenance")
+	}
+	x.now = x.now.Add(time.Hour)
+	_ = e.Tick(ctx)
+	if n := x.runner.count("mwan3"); n != 10 {
+		t.Fatal("exhausted calibration kept retrying", n)
 	}
 }
 func TestTTLRecomputeAndOnChangeHold(t *testing.T) {

@@ -45,6 +45,9 @@ func ExpandProbeURL(raw string, payload int64) string {
 	return strings.ReplaceAll(raw, "{bytes}", strconv.FormatInt(payload, 10))
 }
 func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time) (float64, error) {
+	return a.probe(ctx, s, c, b, now, nil)
+}
+func (a *Adapter) probe(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time, begin func() error) (float64, error) {
 	if !c.Online {
 		return 0, errors.New("WAN is offline; no probe")
 	}
@@ -60,7 +63,7 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 		}
 	}
 	p := s.Config.For(c.Interface)
-	speed, err := a.probeAttempt(ctx, s, c, b, now, p.Bytes, ExpandProbeURL(target, p.Bytes))
+	speed, err := a.probeAttempt(ctx, s, c, b, now, p.Bytes, ExpandProbeURL(target, p.Bytes), begin)
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
@@ -85,7 +88,7 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 		return speed, err
 	}
 	// Exactly one larger request; its full payload is durably reserved independently before network.
-	speed, err = a.probeAttempt(ctx, s, c, b, now, retry, ExpandProbeURL(target, retry))
+	speed, err = a.probeAttempt(ctx, s, c, b, now, retry, ExpandProbeURL(target, retry), begin)
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
@@ -94,7 +97,7 @@ func (a *Adapter) Probe(ctx context.Context, s Snapshot, c Channel, b Budgets, n
 	}
 	return speed, err
 }
-func (a *Adapter) probeAttempt(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time, payload int64, probeURL string) (float64, error) {
+func (a *Adapter) probeAttempt(ctx context.Context, s Snapshot, c Channel, b Budgets, now time.Time, payload int64, probeURL string, before ...func() error) (float64, error) {
 	if !c.Online {
 		return 0, errors.New("WAN is offline; no probe")
 	}
@@ -123,6 +126,11 @@ func (a *Adapter) probeAttempt(ctx context.Context, s Snapshot, c Channel, b Bud
 	// already exceeds the version that introduced this write-out format.
 	statsFormat := "%{json}\n"
 	args := []string{"mwan3", "use", c.Interface, "curl", "-4", "--silent", "--show-error", "--noproxy", "*", "--interface", c.Device, "--connect-timeout", "4", "--max-time", strconv.FormatFloat(s.Config.Timeout.Seconds(), 'f', 0, 64), "--max-filesize", strconv.FormatInt(p.Bytes, 10), "--range", "0-" + strconv.FormatInt(p.Bytes-1, 10), "--proto", "=http,https", "--proto-redir", "=http,https", "--resolve", host + ":" + port + ":" + remote.String(), "--output", "/dev/null", "--write-out", statsFormat, "--url", probeURL}
+	if len(before) > 0 && before[0] != nil {
+		if err := before[0](); err != nil {
+			return 0, fmt.Errorf("persist measurement attempt: %w", err)
+		}
+	}
 	out, runErr := a.Runner.Run(probeCtx, args, "")
 	stats, err := ParseCurl(out)
 	if err != nil {
