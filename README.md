@@ -76,6 +76,7 @@ The private `/var/run/mwan3-autobalancer/state.json` stores the per-WAN throttle
 - [v0.1.3 watchdog readiness and LuCI validation (Russian)](docs/DEVICE-VALIDATION-0.1.3.ru.md)
 - [v0.1.4 curl diagnostics and router validation (Russian)](docs/DEVICE-VALIDATION-0.1.4.ru.md)
 - [v0.1.5 Yandex discovery and router validation (Russian)](docs/DEVICE-VALIDATION-0.1.5.ru.md)
+- [v0.1.6 reconnect-safe scheduling and router validation (Russian)](docs/DEVICE-VALIDATION-0.1.6.ru.md)
 
 The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by the configured maintenance probes (six hours by default); an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
 
