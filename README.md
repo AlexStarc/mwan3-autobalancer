@@ -53,6 +53,18 @@ Discovery reserves at most 64 KiB from the same persistent per-WAN daily allowan
 
 The Internetometer API is undocumented and can change. Automatic discovery handles CDN URL changes while the API remains compatible; it does not repair USB disconnects, operator outages or changes to the API contract. Manual URL mode remains available as a fallback.
 
+## Probe scheduling
+
+Automatic measurements wait for at least five minutes of continuously observed online state after a WAN reconnects. The controller checks availability about every 20 seconds; an offline WAN leaves the proposed routing policy immediately on that check, without waiting for a speed test. A short disconnect entirely between checks may go undetected.
+
+Actual measurement attempts on each logical WAN are at least 15 minutes apart, including after reconnects, source/device changes and daemon restarts. Consecutive failed measurements retry after 15, 30 and then 60 minutes, capped at 60; success resets the failure streak. Calibration needs two valid samples and permits at most five actual attempts. Its finite window expands to fit these pauses and serial measurements; waiting for Yandex discovery does not count as a measurement failure or consume an attempt. Quota and confidence limits still apply, including the existing single bounded larger-payload retry within one attempt.
+
+After successful calibration, hybrid mode uses the configured maintenance interval: six hours by default, or the existing four-hour setting if configured. Failed maintenance measurements use the same failure backoff. On-change mode stops active measurements after calibration completes or is exhausted. An exhausted hybrid calibration returns to its configured maintenance interval.
+
+The private `/var/run/mwan3-autobalancer/state.json` stores the per-WAN throttle independently of samples, before payload transfer starts. Keep this file through daemon/service restarts; deleting runtime state or rebooting the router clears it. On startup the controller waits for five fresh online minutes because continuity during downtime is unknown. Migrating older state adds a conservative 15-minute wait; existing samples remain usable only for the same channel epoch. Daily reservations stay in their separate persistent budget file.
+
+**Measure** in LuCI, `probe`, and explicit `once` commands bypass automatic timing guards. They still require an online WAN and enforce transport and quota checks; their actual measurement outcomes update the automatic throttle. LuCI **Measure** and `probe` remain observation-only. The displayed next measurement includes settling, discovery deferrals and retry guards; status polling itself never starts a probe.
+
 ## Documents
 
 - [Design](docs/specs/2026-10-06-design.md)
@@ -65,7 +77,7 @@ The Internetometer API is undocumented and can change. Automatic discovery handl
 - [v0.1.4 curl diagnostics and router validation (Russian)](docs/DEVICE-VALIDATION-0.1.4.ru.md)
 - [v0.1.5 Yandex discovery and router validation (Russian)](docs/DEVICE-VALIDATION-0.1.5.ru.md)
 
-The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by six-hour maintenance probes; an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
+The implementation language is Go with a pure-Go release profile. LuCI remains a small authenticated JS frontend, without a separate public web server. The initial schedule uses a finite calibration phase followed by the configured maintenance probes (six hours by default); an optional on-change mode stops periodic active probes after calibration while keeping supervision running.
 
 The LuCI page supports English and Russian using the normal LuCI language preference. English is the source language; the Russian catalog is included in the UI package. Changing the display language does not alter WAN settings or the controller mode.
 
@@ -76,6 +88,8 @@ Automatic applying fails closed when the independent recovery watchdog is unavai
 If configuration or WAN generation changes before an update is armed, the controller leaves the rules unchanged and tries again on the next normal cycle using a fresh snapshot. Policy conflicts, unavailable recovery and uncertain writes remain blocked until verified recovery; a safe refusal does not permanently disable automatic updates. Controller 0.1.2-r1 also retires the two legacy generation-change blockers while preserving measurements, schedules, budgets and settings. Controller 0.1.3-r1 retries verified watchdog unavailability before arming an update, and LuCI 0.1.3-r1 clears stale mode validation when readiness returns. Controller 0.1.4-r1 fixes curl failure diagnostics; the unchanged LuCI package remains 0.1.3-r1.
 
 Controller and LuCI 0.1.5-r1 add optional Yandex discovery. Existing configurations continue using the manual URL provider until Yandex is selected.
+
+Controller and LuCI 0.1.6-r1 add reconnect-safe measurement scheduling with persisted per-WAN attempt spacing and failure backoff. Existing probe budgets, URLs, maintenance intervals and routing settings are retained.
 
 ## Reference project
 

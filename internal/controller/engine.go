@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,17 +24,18 @@ type Schedule struct {
 	WindowSeconds    int64     `json:"window_seconds"`
 }
 type State struct {
-	Samples           map[string]Sample   `json:"samples"`
-	Schedule          map[string]Schedule `json:"schedule"`
-	ProbeErrors       map[string]string   `json:"probe_errors"`
-	ProbeStates       map[string]string   `json:"probe_states"`
-	Weights           []int               `json:"weights"`
-	LastApply         time.Time           `json:"last_apply"`
-	AppliedGeneration string              `json:"applied_generation"`
-	Generation        string              `json:"generation"`
-	LastError         string              `json:"last_error"`
-	ApplyBlocked      string              `json:"apply_blocked,omitempty"`
-	ApplyDeferred     string              `json:"apply_deferred,omitempty"`
+	ProbeThrottle     map[string]ProbeThrottle `json:"probe_throttle"`
+	Samples           map[string]Sample        `json:"samples"`
+	Schedule          map[string]Schedule      `json:"schedule"`
+	ProbeErrors       map[string]string        `json:"probe_errors"`
+	ProbeStates       map[string]string        `json:"probe_states"`
+	Weights           []int                    `json:"weights"`
+	LastApply         time.Time                `json:"last_apply"`
+	AppliedGeneration string                   `json:"applied_generation"`
+	Generation        string                   `json:"generation"`
+	LastError         string                   `json:"last_error"`
+	ApplyBlocked      string                   `json:"apply_blocked,omitempty"`
+	ApplyDeferred     string                   `json:"apply_deferred,omitempty"`
 }
 type Report struct {
 	Policy                 string     `json:"policy"`
@@ -59,6 +61,7 @@ type Engine struct {
 	mu        sync.Mutex
 	state     State
 	busy      bool
+	started   bool
 	report    Report
 }
 
@@ -76,6 +79,9 @@ func NewEngine(a *Adapter, b Budgets, statePath string) *Engine {
 	return e
 }
 func (e *Engine) init() {
+	if e.state.ProbeThrottle == nil {
+		e.state.ProbeThrottle = map[string]ProbeThrottle{}
+	}
 	if e.state.Samples == nil {
 		e.state.Samples = map[string]Sample{}
 	}
@@ -110,19 +116,6 @@ func channelEpoch(s Snapshot, c Channel) string {
 	}{provider, s.Config.Policy, target, s.Config.For(c.Interface).Bytes, s.Config.MaxProbeBytes, s.Config.MinimumBytes, s.Config.Timeout, s.Config.MinimumSeconds, s.Config.Alpha, c.Member, c.Interface, c.Device, c.SourceIP, c.Metric, c.BaselineWeight, c.Online, s.Mask, c.ID})
 	return string(b)
 }
-func CalibrationWindow(s Snapshot) time.Duration {
-	online := 0
-	for _, c := range s.Channels {
-		if c.Online {
-			online++
-		}
-	}
-	window := time.Duration(2*online)*s.Config.Timeout + s.Config.CalibrationInterval + s.Config.Settle + time.Minute
-	if window < s.Config.CalibrationMinimumWindow {
-		return s.Config.CalibrationMinimumWindow
-	}
-	return window
-}
 func (e *Engine) refresh(ctx context.Context) (Snapshot, error) {
 	s, err := e.Adapter.Discover(ctx)
 	if err != nil {
@@ -138,18 +131,44 @@ func (e *Engine) refresh(ctx context.Context) (Snapshot, error) {
 	now := e.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	seen := make(map[string]bool, len(s.Channels))
 	for _, c := range s.Channels {
+		seen[c.Interface] = true
 		epoch := channelEpoch(s, c)
 		sc := e.state.Schedule[c.Interface]
+		if !e.started {
+			// Old state has no independent throttle. Its last failed attempt
+			// cannot be reconstructed reliably, so migrate conservatively.
+			if _, ok := e.state.ProbeThrottle[c.Interface]; !ok && sc.Epoch != "" {
+				e.state.ProbeThrottle[c.Interface] = ProbeThrottle{RetryAfter: now.Add(automaticAttemptInterval)}
+			}
+		}
 		if sc.Epoch != epoch {
 			delete(e.state.Samples, c.Interface)
 			window := CalibrationWindow(s)
-			sc = Schedule{Epoch: epoch, SettleUntil: now.Add(s.Config.Settle), CalibrationUntil: now.Add(window), Next: now.Add(s.Config.Settle), WindowSeconds: int64(window / time.Second)}
+			sc = Schedule{Epoch: epoch, SettleUntil: now.Add(settleDuration(s.Config)), CalibrationUntil: now.Add(window), Next: now.Add(settleDuration(s.Config)), WindowSeconds: int64(window / time.Second)}
 			e.state.ProbeStates[c.Interface] = "settling"
 			e.state.ProbeErrors[c.Interface] = ""
 		}
+		if !e.started && c.Online {
+			sc.SettleUntil = now.Add(settleDuration(s.Config))
+			extendCalibration(&sc, now.Add(CalibrationWindow(s)), s.Config)
+		}
+		sc.Next = nextAutomatic(sc, e.state.ProbeThrottle[c.Interface])
+		if sc.Epoch != e.state.Schedule[c.Interface].Epoch || !e.started {
+			extendCalibration(&sc, sc.Next.Add(CalibrationWindow(s)-settleDuration(s.Config)), s.Config)
+		}
 		e.state.Schedule[c.Interface] = sc
 	}
+	for iface := range e.state.Schedule {
+		if !seen[iface] {
+			delete(e.state.Schedule, iface)
+			delete(e.state.Samples, iface)
+			delete(e.state.ProbeStates, iface)
+			delete(e.state.ProbeErrors, iface)
+		}
+	}
+	e.started = true
 	e.state.Generation = s.Generation
 	e.makeReport(s, now)
 	return s, nil
@@ -231,16 +250,16 @@ func (e *Engine) makeReport(s Snapshot, now time.Time) {
 			c.Phase = "holding"
 		} else if c.ProbeError != "" {
 			c.Phase = "error"
-		} else if !schedule.Complete && schedule.Attempts < 5 && !now.After(schedule.CalibrationUntil) {
+		} else if pendingCalibration(schedule, now) {
 			c.Phase = "calibrating"
 		} else if s.Config.ScheduleMode == "hybrid" {
 			c.Phase = "maintenance"
 		}
-		pendingCalibration := !schedule.Complete && schedule.Attempts < 5 && !now.After(schedule.CalibrationUntil)
-		if s.Config.Enabled && s.Config.HasProbeTarget() && c.Online && (s.Config.ScheduleMode == "hybrid" || pendingCalibration) {
-			next := schedule.Next
-			if !schedule.Complete && (schedule.Attempts >= 5 || now.After(schedule.CalibrationUntil)) {
-				next = now.Add(s.Config.For(c.Interface).Interval)
+		pending := pendingCalibration(schedule, now)
+		if s.Config.Enabled && s.Config.HasProbeTarget() && c.Online && (s.Config.ScheduleMode == "hybrid" || pending) {
+			next := nextAutomatic(schedule, e.state.ProbeThrottle[c.Interface])
+			if !schedule.Complete && (schedule.Attempts >= calibrationAttempts || now.After(schedule.CalibrationUntil)) {
+				next = nextAutomatic(Schedule{Next: now.Add(s.Config.For(c.Interface).Interval), SettleUntil: schedule.SettleUntil}, e.state.ProbeThrottle[c.Interface])
 			}
 			if !next.After(now) {
 				next = now.Add(20 * time.Second)
@@ -323,43 +342,77 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 		}
 		e.mu.Lock()
 		sc := e.state.Schedule[c.Interface]
+		now = e.Now()
 		sample := e.state.Samples[c.Interface]
-		due := manual || (!now.Before(sc.Next) && !now.Before(sc.SettleUntil) && ((!sc.Complete && sc.Attempts < 5 && !now.After(sc.CalibrationUntil)) || (s.Config.ScheduleMode == "hybrid" && sc.Complete)))
-		if !manual && !sc.Complete && (sc.Attempts >= 5 || now.After(sc.CalibrationUntil)) {
+		if !manual && !sc.Complete && !pendingCalibration(sc, now) {
 			sc.Complete = true
 			sc.Next = now.Add(s.Config.For(c.Interface).Interval)
 			e.state.Schedule[c.Interface] = sc
 			e.state.ProbeStates[c.Interface] = "calibration-exhausted"
 		}
+		due := manual || (!now.Before(nextAutomatic(sc, e.state.ProbeThrottle[c.Interface])) && (pendingCalibration(sc, now) || (s.Config.ScheduleMode == "hybrid" && sc.Complete)))
 		if due {
 			e.state.ProbeStates[c.Interface] = "measuring"
-			if sc.Complete {
-				sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
-			} else {
-				sc.Next = e.Now().Add(s.Config.CalibrationInterval)
-			}
-			e.state.Schedule[c.Interface] = sc
 		}
-		e.makeReport(s, e.Now())
+		e.makeReport(s, now)
 		e.mu.Unlock()
 		if !due {
 			continue
 		}
-		speed, probeErr := e.Adapter.Probe(ctx, s, c, e.Budgets, e.Now())
+		started := false
+		// Persist the attempt before payload network I/O. Discovery, preflight
+		// and quota refusals never call this hook or consume actual attempts.
+		begin := func() error {
+			if started {
+				return nil
+			}
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			// Publish the reservation only after persistence succeeds. Keep the
+			// candidate maps private so refusal consumes no attempt or streak.
+			candidate := e.state
+			candidate.ProbeThrottle = maps.Clone(e.state.ProbeThrottle)
+			candidate.Schedule = maps.Clone(e.state.Schedule)
+			throttle := candidate.ProbeThrottle[c.Interface]
+			throttle.LastAttempt = e.Now()
+			throttle.Failures = min(throttle.Failures+1, 3)
+			throttle.RetryAfter = e.Now().Add(failureBackoff(throttle.Failures))
+			candidate.ProbeThrottle[c.Interface] = throttle
+			current := candidate.Schedule[c.Interface]
+			current.Attempts++
+			current.Next = throttle.RetryAfter
+			candidate.Schedule[c.Interface] = current
+			if err := AtomicJSON(e.StatePath, candidate); err != nil {
+				return err
+			}
+			e.state = candidate
+			e.makeReport(s, e.Now())
+			started = true
+			return nil
+		}
+		speed, probeErr := e.Adapter.probe(ctx, s, c, e.Budgets, e.Now(), begin)
 		e.mu.Lock()
 		sc = e.state.Schedule[c.Interface]
 		var deferred *ProbeDeferredError
-		if errors.As(probeErr, &deferred) {
-			sc.Next = deferred.Until
-			// Cooldown is scheduling, not a failed network attempt. Keep the
-			// calibration window open through its deferred retry in on-change mode.
-			if !sc.Complete && sc.CalibrationUntil.Before(sc.Next.Add(s.Config.CalibrationInterval)) {
-				sc.CalibrationUntil = sc.Next.Add(s.Config.CalibrationInterval)
-				sc.WindowSeconds = int64(sc.CalibrationUntil.Sub(sc.SettleUntil.Add(-s.Config.Settle)) / time.Second)
+		if !started {
+			sc.Next = e.Now().Add(s.Config.CalibrationInterval)
+			if errors.As(probeErr, &deferred) {
+				sc.Next = deferred.Until
+			}
+			// Discovery waiting is scheduling rather than measurement failure.
+			if deferred != nil {
+				extendCalibration(&sc, sc.Next.Add(CalibrationWindow(s)-settleDuration(s.Config)), s.Config)
 			}
 		} else {
-			sc.Attempts++
-			sc.Next = e.Now().Add(s.Config.CalibrationInterval)
+			throttle := e.state.ProbeThrottle[c.Interface]
+			if probeErr == nil {
+				throttle.Failures = 0
+				throttle.RetryAfter = e.Now().Add(automaticAttemptInterval)
+			} else {
+				throttle.RetryAfter = e.Now().Add(failureBackoff(throttle.Failures))
+			}
+			e.state.ProbeThrottle[c.Interface] = throttle
+			sc.Next = nextAutomatic(Schedule{Next: e.Now().Add(calibrationInterval(s.Config))}, throttle)
 		}
 		if probeErr != nil {
 			e.state.ProbeErrors[c.Interface] = probeErr.Error()
@@ -376,9 +429,10 @@ func (e *Engine) Cycle(ctx context.Context, manual, apply bool) error {
 				sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
 			}
 		}
-		if sc.Complete && deferred == nil {
+		if sc.Complete && started && probeErr == nil {
 			sc.Next = e.Now().Add(s.Config.For(c.Interface).Interval)
 		}
+		sc.Next = nextAutomatic(sc, e.state.ProbeThrottle[c.Interface])
 		e.state.Schedule[c.Interface] = sc
 		e.makeReport(s, e.Now())
 		e.mu.Unlock()

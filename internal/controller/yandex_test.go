@@ -212,29 +212,31 @@ func TestYandexNoMetadataForStatusOfflineOrQuota(t *testing.T) {
 	}
 }
 func TestYandexCalibrationDeferralAndAttemptBound(t *testing.T) {
-	ctx := context.Background()
 	x, calls, body := yandexFixture(t)
 	*body = `{}`
 	x.cfg.Values["main"]["schedule_mode"] = "on-change"
 	e := makeEngine(t, x)
-	_ = e.Tick(ctx)
-	x.now = x.now.Add(time.Minute)
-	_ = e.Tick(ctx)
-	if *calls != 2 || e.state.Schedule["a"].Attempts != 1 {
-		t.Fatal(*calls, e.state.Schedule)
-	}
-	x.now = x.now.Add(2 * time.Minute)
-	_ = e.Tick(ctx)
+	start := x.now
+	tickAt(t, e, x, start)
+	tickAt(t, e, x, start.Add(5*time.Minute))
+	tickAt(t, e, x, start.Add(7*time.Minute))
 	sc := e.state.Schedule["a"]
-	if sc.Attempts != 1 || !sc.Next.Equal(x.now.Add(8*time.Minute)) || sc.CalibrationUntil.Before(sc.Next) {
-		t.Fatal(sc)
+	if *calls != 2 || sc.Attempts != 0 || !sc.Next.Equal(start.Add(15*time.Minute)) {
+		t.Fatal(*calls, sc)
 	}
-	for i := 0; i < 30; i++ {
-		x.now = x.now.Add(2 * time.Minute)
-		_ = e.Tick(ctx)
+	*body = yandexMetadata
+	x.curlErr = errors.New("payload failed")
+	for _, minute := range []int{15, 30, 60, 120, 180} {
+		tickAt(t, e, x, start.Add(time.Duration(minute)*time.Minute))
 	}
-	if *calls != 10 || e.state.Schedule["a"].Attempts != 5 || !e.state.Schedule["a"].Complete {
-		t.Fatal(*calls, e.state.Schedule)
+	tickAt(t, e, x, x.now.Add(20*time.Second))
+	if e.state.Schedule["a"].Attempts != 5 || !e.state.Schedule["a"].Complete {
+		t.Fatal(e.state.Schedule)
+	}
+	n := x.runner.count("mwan3")
+	tickAt(t, e, x, x.now.Add(48*time.Hour))
+	if n != x.runner.count("mwan3") {
+		t.Fatal("on-change retried exhausted calibration")
 	}
 }
 
@@ -303,48 +305,39 @@ func TestYandexRejectsUnboundAndOversizeResponses(t *testing.T) {
 	}
 }
 func TestYandexThresholdDefersWithoutDiscardingHistory(t *testing.T) {
-	ctx := context.Background()
 	x, calls, body := yandexFixture(t)
 	x.cfg.Values["main"]["schedule_mode"] = "on-change"
 	e := makeEngine(t, x)
-	_ = e.Tick(ctx)
-	x.now = x.now.Add(time.Minute)
-	if err := e.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// One retained valid sample; three genuine target failures trigger discovery.
+	start := x.now
+	tickAt(t, e, x, start)
+	tickAt(t, e, x, start.Add(5*time.Minute))
 	x.curl = strings.ReplaceAll(x.curl, `"http_code":206`, `"http_code":503`)
-	for i := 0; i < 3; i++ {
-		x.now = x.now.Add(2 * time.Minute)
-		_ = e.Tick(ctx)
+	for _, minute := range []int{6, 7, 8} {
+		tickAt(t, e, x, start.Add(time.Duration(minute)*time.Minute))
+		_ = e.Cycle(context.Background(), true, false)
 	}
 	if *calls != 2 || e.state.Schedule["a"].Attempts != 4 || e.state.Samples["a"].Count != 1 {
 		t.Fatal(*calls, e.state.Schedule, e.state.Samples)
 	}
-	x.now = x.now.Add(2 * time.Minute)
-	_ = e.Tick(ctx)
-	if e.state.Schedule["a"].Attempts != 4 || *calls != 2 {
-		t.Fatal("cooldown consumed an attempt", e.state.Schedule, *calls)
+	// A manual request reaches discovery cooldown while the automatic failure
+	// backoff remains active. Neither waiting nor target changes erase samples.
+	tickAt(t, e, x, start.Add(9*time.Minute))
+	if err := e.Cycle(context.Background(), true, false); err == nil {
+		t.Fatal("missing discovery cooldown")
 	}
-	next := e.state.Schedule["a"].Next
-	if !next.Equal(x.now.Add(2*time.Minute)) || e.state.Schedule["a"].CalibrationUntil.Before(next) {
-		t.Fatal(e.state.Schedule)
+	if e.state.Schedule["a"].Attempts != 4 || *calls != 2 || !nextFor(t, e, "a").Equal(start.Add(68*time.Minute)) {
+		t.Fatal("discovery consumed attempt or erased backoff", e.state.Schedule, *calls)
 	}
-	// Dynamic target replacement changes neither channel epoch nor sample history.
 	*body = strings.ReplaceAll(yandexMetadata, "node.cdn.yandex.net", "new.cdn.yandex.net")
 	x.curl = strings.ReplaceAll(x.curl, `"http_code":503`, `"http_code":206`)
-	x.now = next
-	if err := e.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
+	tickAt(t, e, x, start.Add(68*time.Minute))
 	if *calls != 4 || e.state.Schedule["a"].Attempts != 5 || !e.state.Schedule["a"].Complete || e.state.Samples["a"].Count != 2 {
 		t.Fatal(*calls, e.state.Schedule, e.state.Samples)
 	}
 	n := x.runner.count("mwan3")
-	x.now = x.now.Add(48 * time.Hour)
-	_ = e.Tick(ctx)
+	tickAt(t, e, x, x.now.Add(48*time.Hour))
 	if x.runner.count("mwan3") != n {
-		t.Fatal("on-change restarted after completed discovery")
+		t.Fatal("on-change restarted completed calibration")
 	}
 }
 
